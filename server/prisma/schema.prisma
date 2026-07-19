@@ -12,6 +12,12 @@ enum Gender {
   FEMALE
 }
 
+enum LockerStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
+
 model Customer {
   id          Int       @id @default(autoincrement())
   firstName   String
@@ -24,4 +30,23 @@ model Customer {
   notes       String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  visits      Visit[]
+}
+
+model Locker {
+  id     Int          @id @default(autoincrement())
+  number String
+  gender Gender
+  status LockerStatus @default(AVAILABLE)
+  visits Visit[]
+}
+
+model Visit {
+  id         Int       @id @default(autoincrement())
+  customerId Int
+  customer   Customer  @relation(fields: [customerId], references: [id])
+  lockerId   Int
+  locker     Locker    @relation(fields: [lockerId], references: [id])
+  checkInAt  DateTime  @default(now())
+  checkOutAt DateTime?
 }
