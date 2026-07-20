@@ -42,7 +42,6 @@ app.get("/lockers", async (_req, res) => {
   res.json(lockers);
 });
 
-// One-time setup use, for seeding your physical locker pool — see Part 2's curl step below
 app.post("/lockers", async (req, res) => {
   const { number, gender } = req.body;
   if (!number || !gender) {
@@ -52,12 +51,12 @@ app.post("/lockers", async (req, res) => {
   res.status(201).json(locker);
 });
 
-// ---- Visits (check-in / check-out) ----
+// ---- Visits + billing ----
 
 app.get("/visits/active", async (_req, res) => {
   const visits = await prisma.visit.findMany({
     where: { checkOutAt: null },
-    include: { customer: true, locker: true },
+    include: { customer: true, locker: true, bill: { include: { lineItems: true } } },
     orderBy: { checkInAt: "desc" },
   });
   res.json(visits);
@@ -77,34 +76,52 @@ app.post("/check-in", async (req, res) => {
     return res.status(409).json({ error: `No available lockers for ${customer.gender.toLowerCase()}` });
   }
 
-  const [updatedLocker, visit] = await prisma.$transaction([
+  const [updatedLocker, newVisit] = await prisma.$transaction([
     prisma.locker.update({ where: { id: locker.id }, data: { status: "OCCUPIED" } }),
-    prisma.visit.create({
-      data: { customerId: customer.id, lockerId: locker.id },
-      include: { customer: true, locker: true },
-    }),
+    prisma.visit.create({ data: { customerId: customer.id, lockerId: locker.id } }),
   ]);
+
+  // A bill starts empty the moment someone checks in, ready to collect charges
+  const bill = await prisma.bill.create({ data: { visitId: newVisit.id } });
+  const visit = { ...newVisit, customer, locker: updatedLocker, bill: { ...bill, lineItems: [] } };
 
   io.emit("locker:updated", updatedLocker);
   io.emit("visit:checked-in", visit);
   res.status(201).json(visit);
 });
 
+// Add a charge to an open bill — a drink, a treatment, a towel rental
+app.post("/bills/:billId/line-items", async (req, res) => {
+  const billId = Number(req.params.billId);
+  const { description, amount } = req.body;
+  if (!description || typeof amount !== "number") {
+    return res.status(400).json({ error: "description and amount are required" });
+  }
+  const lineItem = await prisma.billLineItem.create({ data: { billId, description, amount } });
+  io.emit("bill:line-item-added", { billId, lineItem });
+  res.status(201).json(lineItem);
+});
+
 app.post("/check-out", async (req, res) => {
-  const { visitId } = req.body;
+  const { visitId, paymentMethod } = req.body;
+  if (!paymentMethod) {
+    return res.status(400).json({ error: "paymentMethod is required to check out" });
+  }
   const visit = await prisma.visit.findUnique({ where: { id: visitId } });
   if (!visit || visit.checkOutAt) {
     return res.status(404).json({ error: "Active visit not found" });
   }
 
-  const [updatedVisit, updatedLocker] = await prisma.$transaction([
+  const [updatedVisit, updatedLocker, updatedBill] = await prisma.$transaction([
     prisma.visit.update({ where: { id: visitId }, data: { checkOutAt: new Date() } }),
     prisma.locker.update({ where: { id: visit.lockerId }, data: { status: "AVAILABLE" } }),
+    prisma.bill.update({ where: { visitId }, data: { paymentMethod, paidAt: new Date() } }),
   ]);
 
   io.emit("visit:checked-out", updatedVisit);
   io.emit("locker:updated", updatedLocker);
-  res.json(updatedVisit);
+  io.emit("bill:paid", updatedBill);
+  res.json({ visit: updatedVisit, bill: updatedBill });
 });
 
 io.on("connection", (socket) => {

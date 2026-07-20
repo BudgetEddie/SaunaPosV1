@@ -19,11 +19,86 @@ type Locker = {
   status: string;
 };
 
+type BillLineItem = {
+  id: number;
+  description: string;
+  amount: number;
+};
+
+type Bill = {
+  id: number;
+  taxRate: number;
+  lineItems: BillLineItem[];
+};
+
 type Visit = {
   id: number;
   customer: Customer;
   locker: Locker;
+  bill: Bill;
 };
+
+function billTotal(bill: Bill) {
+  const subtotal = bill.lineItems.reduce((sum, item) => sum + item.amount, 0);
+  const tax = subtotal * bill.taxRate;
+  return { subtotal, tax, total: subtotal + tax };
+}
+
+function ActiveVisitRow({ visit, onCheckedOut }: { visit: Visit; onCheckedOut: () => void }) {
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("CASH");
+  const { subtotal, tax, total } = billTotal(visit.bill);
+
+  const addCharge = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!description || !amount) return;
+    await fetch(`http://localhost:4000/bills/${visit.bill.id}/line-items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ description, amount: parseFloat(amount) }),
+    });
+    setDescription("");
+    setAmount("");
+  };
+
+  const checkOut = async () => {
+    await fetch("http://localhost:4000/check-out", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visitId: visit.id, paymentMethod }),
+    });
+    onCheckedOut();
+  };
+
+  return (
+    <li style={{ padding: 12, borderBottom: "1px solid #ddd" }}>
+      <strong>{visit.customer.firstName} {visit.customer.lastName}</strong> — locker {visit.locker.number}
+      <ul>
+        {visit.bill.lineItems.map((item) => (
+          <li key={item.id}>{item.description} — ${item.amount.toFixed(2)}</li>
+        ))}
+      </ul>
+      <div>Subtotal ${subtotal.toFixed(2)} + tax ${tax.toFixed(2)} = <strong>${total.toFixed(2)}</strong></div>
+
+      <form onSubmit={addCharge} style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <input placeholder="Item" value={description} onChange={(e) => setDescription(e.target.value)} />
+        <input placeholder="Amount" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ width: 90 }} />
+        <button type="submit">Add charge</button>
+      </form>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+        <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+          <option value="CASH">Cash</option>
+          <option value="CARD">Card</option>
+          <option value="GIFT_CARD">Gift card</option>
+          <option value="VISIT_PASS">Visit pass</option>
+        </select>
+        <button onClick={checkOut}>Check out &amp; pay</button>
+      </div>
+    </li>
+  );
+}
 
 function App() {
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -35,10 +110,14 @@ function App() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
 
+  const loadActiveVisits = () => {
+    fetch("http://localhost:4000/visits/active").then((r) => r.json()).then(setActiveVisits);
+  };
+
   useEffect(() => {
     fetch("http://localhost:4000/customers").then((r) => r.json()).then(setCustomers);
     fetch("http://localhost:4000/lockers").then((r) => r.json()).then(setLockers);
-    fetch("http://localhost:4000/visits/active").then((r) => r.json()).then(setActiveVisits);
+    loadActiveVisits();
 
     socket.on("customer:created", (customer: Customer) => {
       setCustomers((prev) => [customer, ...prev]);
@@ -46,18 +125,18 @@ function App() {
     socket.on("locker:updated", (locker: Locker) => {
       setLockers((prev) => prev.map((l) => (l.id === locker.id ? locker : l)));
     });
-    socket.on("visit:checked-in", (visit: Visit) => {
-      setActiveVisits((prev) => [visit, ...prev]);
-    });
+    socket.on("visit:checked-in", () => loadActiveVisits());
     socket.on("visit:checked-out", (visit: { id: number }) => {
       setActiveVisits((prev) => prev.filter((v) => v.id !== visit.id));
     });
+    socket.on("bill:line-item-added", () => loadActiveVisits());
 
     return () => {
       socket.off("customer:created");
       socket.off("locker:updated");
       socket.off("visit:checked-in");
       socket.off("visit:checked-out");
+      socket.off("bill:line-item-added");
     };
   }, []);
 
@@ -86,14 +165,6 @@ function App() {
     }
   };
 
-  const checkOut = async (visitId: number) => {
-    await fetch("http://localhost:4000/check-out", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ visitId }),
-    });
-  };
-
   const checkedInCustomerIds = new Set(activeVisits.map((v) => v.customer.id));
   const availableCount = (g: string) => lockers.filter((l) => l.gender === g && l.status === "AVAILABLE").length;
   const totalCount = (g: string) => lockers.filter((l) => l.gender === g).length;
@@ -109,10 +180,7 @@ function App() {
       <h2>Currently checked in</h2>
       <ul style={{ listStyle: "none", padding: 0 }}>
         {activeVisits.map((v) => (
-          <li key={v.id} style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
-            <strong>{v.customer.firstName} {v.customer.lastName}</strong> — locker {v.locker.number}{" "}
-            <button onClick={() => checkOut(v.id)}>Check out</button>
-          </li>
+          <ActiveVisitRow key={v.id} visit={v} onCheckedOut={loadActiveVisits} />
         ))}
         {activeVisits.length === 0 && <li>Nobody checked in right now.</li>}
       </ul>

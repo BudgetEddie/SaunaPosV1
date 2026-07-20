@@ -18,6 +18,13 @@ enum LockerStatus {
   MAINTENANCE
 }
 
+enum PaymentMethod {
+  CASH
+  CARD
+  GIFT_CARD
+  VISIT_PASS
+}
+
 model Customer {
   id          Int       @id @default(autoincrement())
   firstName   String
@@ -49,4 +56,25 @@ model Visit {
   locker     Locker    @relation(fields: [lockerId], references: [id])
   checkInAt  DateTime  @default(now())
   checkOutAt DateTime?
+  bill       Bill?
+}
+
+model Bill {
+  id            Int             @id @default(autoincrement())
+  visitId       Int             @unique
+  visit         Visit           @relation(fields: [visitId], references: [id])
+  lineItems     BillLineItem[]
+  taxRate       Float           @default(0.08)
+  paymentMethod PaymentMethod?
+  paidAt        DateTime?
+  createdAt     DateTime        @default(now())
+}
+
+model BillLineItem {
+  id          Int      @id @default(autoincrement())
+  billId      Int
+  bill        Bill     @relation(fields: [billId], references: [id])
+  description String
+  amount      Float
+  createdAt   DateTime @default(now())
 }
