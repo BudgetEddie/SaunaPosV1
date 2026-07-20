@@ -3,6 +3,7 @@ import { io } from "socket.io-client";
 
 const socket = io("http://localhost:4000");
 
+
 type Customer = {
   id: number;
   firstName: string;
@@ -109,6 +110,7 @@ function App() {
   const [gender, setGender] = useState("MALE");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [search, setSearch] = useState("");
 
   const loadActiveVisits = () => {
     fetch("http://localhost:4000/visits/active").then((r) => r.json()).then(setActiveVisits);
@@ -164,6 +166,13 @@ function App() {
       alert(error);
     }
   };
+  const query = search.trim().toLowerCase();
+  const visibleCustomers = query
+    ? customers.filter((c) =>
+        `${c.firstName} ${c.lastName}`.toLowerCase().includes(query) ||
+        (c.phone ?? "").toLowerCase().includes(query)
+      )
+    : customers;
 
   const checkedInCustomerIds = new Set(activeVisits.map((v) => v.customer.id));
   const availableCount = (g: string) => lockers.filter((l) => l.gender === g && l.status === "AVAILABLE").length;
@@ -199,8 +208,15 @@ function App() {
       </form>
 
       <h2>All customers</h2>
+      <input
+        placeholder="Search by name or phone"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        style={{ width: "100%", padding: 8, marginBottom: 12 }}
+      />
+      {query && <p style={{ color: "#666" }}>{visibleCustomers.length} match{visibleCustomers.length === 1 ? "" : "es"}</p>}
       <ul style={{ listStyle: "none", padding: 0 }}>
-        {customers.map((c) => (
+        {visibleCustomers.map((c) => (
           <li key={c.id} style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
             <strong>{c.firstName} {c.lastName}</strong> — {c.gender}
             {c.phone ? ` · ${c.phone}` : ""}{" "}
