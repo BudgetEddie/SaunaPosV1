@@ -63,17 +63,25 @@ app.get("/visits/active", async (_req, res) => {
 });
 
 app.post("/check-in", async (req, res) => {
-  const { customerId } = req.body;
+  const { customerId, lockerId } = req.body;
+  if (!lockerId) {
+    return res.status(400).json({ error: "Pick a locker before checking in" });
+  }
+
   const customer = await prisma.customer.findUnique({ where: { id: customerId } });
   if (!customer) {
     return res.status(404).json({ error: "Customer not found" });
   }
 
-  const locker = await prisma.locker.findFirst({
-    where: { gender: customer.gender, status: "AVAILABLE" },
-  });
+  const locker = await prisma.locker.findUnique({ where: { id: lockerId } });
   if (!locker) {
-    return res.status(409).json({ error: `No available lockers for ${customer.gender.toLowerCase()}` });
+    return res.status(404).json({ error: "Locker not found" });
+  }
+  if (locker.status !== "AVAILABLE") {
+    return res.status(409).json({ error: `Locker ${locker.number} is not available` });
+  }
+  if (locker.gender !== customer.gender) {
+    return res.status(409).json({ error: `Locker ${locker.number} is not in this customer's locker pool` });
   }
 
   const [updatedLocker, newVisit] = await prisma.$transaction([
@@ -81,7 +89,6 @@ app.post("/check-in", async (req, res) => {
     prisma.visit.create({ data: { customerId: customer.id, lockerId: locker.id } }),
   ]);
 
-  // A bill starts empty the moment someone checks in, ready to collect charges
   const bill = await prisma.bill.create({ data: { visitId: newVisit.id } });
   const visit = { ...newVisit, customer, locker: updatedLocker, bill: { ...bill, lineItems: [] } };
 
@@ -91,37 +98,36 @@ app.post("/check-in", async (req, res) => {
 });
 
 // Add a charge to an open bill — a drink, a treatment, a towel rental
-app.post("/bills/:billId/line-items", async (req, res) => {
-  const billId = Number(req.params.billId);
-  const { description, amount } = req.body;
-  if (!description || typeof amount !== "number") {
-    return res.status(400).json({ error: "description and amount are required" });
-  }
-  const lineItem = await prisma.billLineItem.create({ data: { billId, description, amount } });
-  io.emit("bill:line-item-added", { billId, lineItem });
-  res.status(201).json(lineItem);
-});
+app.post("/visits/:visitId/change-locker", async (req, res) => {
+  const visitId = Number(req.params.visitId);
+  const { lockerId } = req.body;
 
-app.post("/check-out", async (req, res) => {
-  const { visitId, paymentMethod } = req.body;
-  if (!paymentMethod) {
-    return res.status(400).json({ error: "paymentMethod is required to check out" });
-  }
-  const visit = await prisma.visit.findUnique({ where: { id: visitId } });
+  const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { customer: true } });
   if (!visit || visit.checkOutAt) {
     return res.status(404).json({ error: "Active visit not found" });
   }
 
-  const [updatedVisit, updatedLocker, updatedBill] = await prisma.$transaction([
-    prisma.visit.update({ where: { id: visitId }, data: { checkOutAt: new Date() } }),
+  const newLocker = await prisma.locker.findUnique({ where: { id: lockerId } });
+  if (!newLocker) {
+    return res.status(404).json({ error: "Locker not found" });
+  }
+  if (newLocker.status !== "AVAILABLE") {
+    return res.status(409).json({ error: `Locker ${newLocker.number} is not available` });
+  }
+  if (newLocker.gender !== visit.customer.gender) {
+    return res.status(409).json({ error: `Locker ${newLocker.number} is not in this customer's locker pool` });
+  }
+
+  const [freedLocker, claimedLocker, updatedVisit] = await prisma.$transaction([
     prisma.locker.update({ where: { id: visit.lockerId }, data: { status: "AVAILABLE" } }),
-    prisma.bill.update({ where: { visitId }, data: { paymentMethod, paidAt: new Date() } }),
+    prisma.locker.update({ where: { id: newLocker.id }, data: { status: "OCCUPIED" } }),
+    prisma.visit.update({ where: { id: visitId }, data: { lockerId: newLocker.id } }),
   ]);
 
-  io.emit("visit:checked-out", updatedVisit);
-  io.emit("locker:updated", updatedLocker);
-  io.emit("bill:paid", updatedBill);
-  res.json({ visit: updatedVisit, bill: updatedBill });
+  io.emit("locker:updated", freedLocker);
+  io.emit("locker:updated", claimedLocker);
+  io.emit("visit:locker-changed", updatedVisit);
+  res.json(updatedVisit);
 });
 
 io.on("connection", (socket) => {

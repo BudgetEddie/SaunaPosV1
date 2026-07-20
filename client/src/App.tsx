@@ -3,7 +3,6 @@ import { io } from "socket.io-client";
 
 const socket = io("http://localhost:4000");
 
-
 type Customer = {
   id: number;
   firstName: string;
@@ -45,11 +44,27 @@ function billTotal(bill: Bill) {
   return { subtotal, tax, total: subtotal + tax };
 }
 
-function ActiveVisitRow({ visit, onCheckedOut }: { visit: Visit; onCheckedOut: () => void }) {
+function LockerPicker({ lockers, value, onChange }: { lockers: Locker[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">Select locker…</option>
+      {lockers.map((l) => (
+        <option key={l.id} value={l.id}>{l.number}</option>
+      ))}
+    </select>
+  );
+}
+
+function ActiveVisitRow({ visit, lockers, onChanged }: { visit: Visit; lockers: Locker[]; onChanged: () => void }) {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
+  const [newLockerId, setNewLockerId] = useState("");
   const { subtotal, tax, total } = billTotal(visit.bill);
+
+  const availableForCustomer = lockers.filter(
+    (l) => l.gender === visit.customer.gender && l.status === "AVAILABLE"
+  );
 
   const addCharge = async (e: FormEvent) => {
     e.preventDefault();
@@ -63,13 +78,28 @@ function ActiveVisitRow({ visit, onCheckedOut }: { visit: Visit; onCheckedOut: (
     setAmount("");
   };
 
+  const changeLocker = async () => {
+    if (!newLockerId) return;
+    const res = await fetch(`http://localhost:4000/visits/${visit.id}/change-locker`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lockerId: Number(newLockerId) }),
+    });
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+    }
+    setNewLockerId("");
+    onChanged();
+  };
+
   const checkOut = async () => {
     await fetch("http://localhost:4000/check-out", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ visitId: visit.id, paymentMethod }),
     });
-    onCheckedOut();
+    onChanged();
   };
 
   return (
@@ -89,6 +119,11 @@ function ActiveVisitRow({ visit, onCheckedOut }: { visit: Visit; onCheckedOut: (
       </form>
 
       <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+        <LockerPicker lockers={availableForCustomer} value={newLockerId} onChange={setNewLockerId} />
+        <button onClick={changeLocker}>Change locker</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
         <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
           <option value="CASH">Cash</option>
           <option value="CARD">Card</option>
@@ -97,6 +132,49 @@ function ActiveVisitRow({ visit, onCheckedOut }: { visit: Visit; onCheckedOut: (
         </select>
         <button onClick={checkOut}>Check out &amp; pay</button>
       </div>
+    </li>
+  );
+}
+
+function CustomerRow({ customer, lockers, isCheckedIn, onCheckedIn }: {
+  customer: Customer;
+  lockers: Locker[];
+  isCheckedIn: boolean;
+  onCheckedIn: () => void;
+}) {
+  const [lockerId, setLockerId] = useState("");
+  const available = lockers.filter((l) => l.gender === customer.gender && l.status === "AVAILABLE");
+
+  const checkIn = async () => {
+    if (!lockerId) {
+      alert("Pick a locker first");
+      return;
+    }
+    const res = await fetch("http://localhost:4000/check-in", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ customerId: customer.id, lockerId: Number(lockerId) }),
+    });
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+    }
+    setLockerId("");
+    onCheckedIn();
+  };
+
+  return (
+    <li style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
+      <strong>{customer.firstName} {customer.lastName}</strong> — {customer.gender}
+      {customer.phone ? ` · ${customer.phone}` : ""}{" "}
+      {isCheckedIn ? (
+        <em>checked in</em>
+      ) : (
+        <>
+          <LockerPicker lockers={available} value={lockerId} onChange={setLockerId} />{" "}
+          <button onClick={checkIn}>Check in</button>
+        </>
+      )}
     </li>
   );
 }
@@ -111,14 +189,18 @@ function App() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [search, setSearch] = useState("");
+  const [lockerSearch, setLockerSearch] = useState("");
 
   const loadActiveVisits = () => {
     fetch("http://localhost:4000/visits/active").then((r) => r.json()).then(setActiveVisits);
   };
+  const loadLockers = () => {
+    fetch("http://localhost:4000/lockers").then((r) => r.json()).then(setLockers);
+  };
 
   useEffect(() => {
     fetch("http://localhost:4000/customers").then((r) => r.json()).then(setCustomers);
-    fetch("http://localhost:4000/lockers").then((r) => r.json()).then(setLockers);
+    loadLockers();
     loadActiveVisits();
 
     socket.on("customer:created", (customer: Customer) => {
@@ -128,6 +210,7 @@ function App() {
       setLockers((prev) => prev.map((l) => (l.id === locker.id ? locker : l)));
     });
     socket.on("visit:checked-in", () => loadActiveVisits());
+    socket.on("visit:locker-changed", () => loadActiveVisits());
     socket.on("visit:checked-out", (visit: { id: number }) => {
       setActiveVisits((prev) => prev.filter((v) => v.id !== visit.id));
     });
@@ -137,6 +220,7 @@ function App() {
       socket.off("customer:created");
       socket.off("locker:updated");
       socket.off("visit:checked-in");
+      socket.off("visit:locker-changed");
       socket.off("visit:checked-out");
       socket.off("bill:line-item-added");
     };
@@ -155,17 +239,6 @@ function App() {
     setEmail("");
   };
 
-  const checkIn = async (customerId: number) => {
-    const res = await fetch("http://localhost:4000/check-in", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ customerId }),
-    });
-    if (!res.ok) {
-      const { error } = await res.json();
-      alert(error);
-    }
-  };
   const query = search.trim().toLowerCase();
   const visibleCustomers = query
     ? customers.filter((c) =>
@@ -174,12 +247,17 @@ function App() {
       )
     : customers;
 
+  const lockerQuery = lockerSearch.trim().toLowerCase();
+  const visibleVisits = lockerQuery
+    ? activeVisits.filter((v) => v.locker.number.toLowerCase().includes(lockerQuery))
+    : activeVisits;
+
   const checkedInCustomerIds = new Set(activeVisits.map((v) => v.customer.id));
   const availableCount = (g: string) => lockers.filter((l) => l.gender === g && l.status === "AVAILABLE").length;
   const totalCount = (g: string) => lockers.filter((l) => l.gender === g).length;
 
   return (
-    <div style={{ padding: 40, fontFamily: "sans-serif", maxWidth: 640 }}>
+    <div style={{ padding: 40, fontFamily: "sans-serif", maxWidth: 720 }}>
       <h1>Sauna POS</h1>
 
       <h2>Occupancy</h2>
@@ -187,11 +265,19 @@ function App() {
       <p>Female lockers: {availableCount("FEMALE")} / {totalCount("FEMALE")} available</p>
 
       <h2>Currently checked in</h2>
+      <input
+        placeholder="Look up by locker number (e.g. M07)"
+        value={lockerSearch}
+        onChange={(e) => setLockerSearch(e.target.value)}
+        style={{ width: "100%", padding: 8, marginBottom: 12 }}
+      />
       <ul style={{ listStyle: "none", padding: 0 }}>
-        {activeVisits.map((v) => (
-          <ActiveVisitRow key={v.id} visit={v} onCheckedOut={loadActiveVisits} />
+        {visibleVisits.map((v) => (
+          <ActiveVisitRow key={v.id} visit={v} lockers={lockers} onChanged={() => { loadActiveVisits(); loadLockers(); }} />
         ))}
-        {activeVisits.length === 0 && <li>Nobody checked in right now.</li>}
+        {visibleVisits.length === 0 && (
+          <li>{lockerQuery ? `No active visit for locker "${lockerSearch}".` : "Nobody checked in right now."}</li>
+        )}
       </ul>
 
       <h2>Add a customer</h2>
@@ -217,11 +303,13 @@ function App() {
       {query && <p style={{ color: "#666" }}>{visibleCustomers.length} match{visibleCustomers.length === 1 ? "" : "es"}</p>}
       <ul style={{ listStyle: "none", padding: 0 }}>
         {visibleCustomers.map((c) => (
-          <li key={c.id} style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
-            <strong>{c.firstName} {c.lastName}</strong> — {c.gender}
-            {c.phone ? ` · ${c.phone}` : ""}{" "}
-            {checkedInCustomerIds.has(c.id) ? <em>checked in</em> : <button onClick={() => checkIn(c.id)}>Check in</button>}
-          </li>
+          <CustomerRow
+            key={c.id}
+            customer={c}
+            lockers={lockers}
+            isCheckedIn={checkedInCustomerIds.has(c.id)}
+            onCheckedIn={() => { loadActiveVisits(); loadLockers(); }}
+          />
         ))}
       </ul>
     </div>
