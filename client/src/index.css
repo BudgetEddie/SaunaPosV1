@@ -109,3 +109,21 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/* ---- Banya 3 login page ---- */
+.lg-page {
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+@keyframes rise {
+  0%   { opacity: 0;   transform: translateY(6px) scaleY(.9); }
+  22%  { opacity: .28; }
+  70%  { opacity: .16; }
+  100% { opacity: 0;   transform: translateY(-34px) scaleY(1.12); }
+}
+.lg-field:focus-within svg.lg-outline rect { stroke: #b5563a; }
+.lg-field input::placeholder { color: rgba(244, 239, 231, .32); font-weight: 400; }
+.lg-btn:hover svg.lg-fill rect { fill: #5f7a5a; }
+.lg-btn:active { transform: translateY(1px); }
+.lg-chip:hover { border-color: #b5563a !important; color: #f4efe7 !important; }
+.lg-page :focus-visible { outline: 2px solid #c8b9a0; outline-offset: 3px; }

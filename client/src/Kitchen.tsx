@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
 import { groupItems } from "./groupItems.ts";
+import { authFetch } from "./authFetch.ts";
 
 const socket = io("http://localhost:4000");
-const API = "http://localhost:4000";
 
 type OrderItem = { id: number; name: string };
 type Order = {
@@ -29,12 +29,14 @@ function minutesAgo(iso: string) {
 
 function Kitchen() {
   const [orders, setOrders] = useState<Order[]>([]);
+  const signedIn = Boolean(localStorage.getItem("token"));
 
   const load = () => {
-    fetch(`${API}/orders/open`).then((r) => r.json()).then(setOrders);
+    authFetch(`/orders/open`).then((r) => r.json()).then(setOrders);
   };
 
   useEffect(() => {
+    if (!signedIn) return;
     load();
     socket.on("orders:changed", load);
     const timer = setInterval(load, 60000); // refresh "minutes ago" labels
@@ -42,10 +44,19 @@ function Kitchen() {
       socket.off("orders:changed", load);
       clearInterval(timer);
     };
-  }, []);
+  }, [signedIn]);
+
+  if (!signedIn) {
+    return (
+      <div style={{ padding: 24, fontFamily: "sans-serif" }}>
+        <h1>Kitchen</h1>
+        <p>Not signed in. <a href="/">Open the register</a> on this terminal first, then come back to /kitchen.</p>
+      </div>
+    );
+  }
 
   const setStatus = async (orderId: number, status: string) => {
-    await fetch(`${API}/orders/${orderId}/status`, {
+    await authFetch(`/orders/${orderId}/status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),

@@ -32,6 +32,20 @@ enum OrderStatus {
   COMPLETE
 }
 
+enum Role {
+  ADMIN
+  STAFF
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  username     String   @unique
+  displayName  String
+  role         Role     @default(STAFF)
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
 model Settings {
   id                      Int   @id @default(1)
   taxRate                 Float @default(0.13)

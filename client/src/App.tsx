@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
 import { groupItems } from "./groupItems.ts";
+import { authFetch, type LoggedInUser } from "./authFetch.ts";
+import Login from "./Login.tsx";
 
 const socket = io("http://localhost:4000");
-const API = "http://localhost:4000";
 
 type Customer = {
   id: number;
@@ -113,7 +114,7 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
   };
 
   const addLineItem = async (desc: string, amt: number) => {
-    await fetch(`${API}/bills/${visit.bill.id}/line-items`, {
+    await authFetch(`/bills/${visit.bill.id}/line-items`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ description: desc, amount: amt }),
@@ -125,19 +126,19 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
 
     if (item.visitCredits > 0) {
       // Selling a pass pack wins over everything, whatever category it lives in
-      await fetch(`${API}/visits/${visit.id}/purchase-pass`, {
+      await authFetch(`/visits/${visit.id}/purchase-pass`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: item.name, amount: item.price, visitCredits: item.visitCredits }),
       });
     } else if (category?.isAdmission) {
-      await showError(await fetch(`${API}/visits/${visit.id}/set-admission`, {
+      await showError(await authFetch(`/visits/${visit.id}/set-admission`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ menuItemId: item.id }),
       }));
     } else if (category?.isKitchen) {
-      await fetch(`${API}/visits/${visit.id}/order-item`, {
+      await authFetch(`/visits/${visit.id}/order-item`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: item.name, amount: item.price }),
@@ -158,7 +159,7 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
 
   const changeLocker = async () => {
     if (!newLockerId) return;
-    await showError(await fetch(`${API}/visits/${visit.id}/change-locker`, {
+    await showError(await authFetch(`/visits/${visit.id}/change-locker`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lockerId: Number(newLockerId) }),
@@ -168,7 +169,7 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
   };
 
   const checkOut = async () => {
-    await showError(await fetch(`${API}/check-out`, {
+    await showError(await authFetch(`/check-out`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ visitId: visit.id, paymentMethod }),
@@ -250,7 +251,7 @@ function CustomerRow({ customer, lockers, isCheckedIn, onCheckedIn }: {
       alert("Pick a locker first");
       return;
     }
-    const res = await fetch(`${API}/check-in`, {
+    const res = await authFetch(`/check-in`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ customerId: customer.id, lockerId: Number(lockerId) }),
@@ -312,7 +313,7 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
   const addCategory = async (e: FormEvent) => {
     e.preventDefault();
     if (!newCategoryName) return;
-    await showError(await fetch(`${API}/categories`, {
+    await showError(await authFetch(`/categories`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -327,7 +328,7 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
   };
 
   const updateCategory = async (c: Category, changes: Partial<Category>) => {
-    await showError(await fetch(`${API}/categories/${c.id}`, {
+    await showError(await authFetch(`/categories/${c.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -346,13 +347,13 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
 
   const deleteCategory = async (id: number) => {
     if (!confirm("Delete this category?")) return;
-    await showError(await fetch(`${API}/categories/${id}`, { method: "DELETE" }));
+    await showError(await authFetch(`/categories/${id}`, { method: "DELETE" }));
   };
 
   const addItem = async (e: FormEvent) => {
     e.preventDefault();
     if (!itemCategoryId || !itemName || !itemPrice) return;
-    await showError(await fetch(`${API}/menu-items`, {
+    await showError(await authFetch(`/menu-items`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -382,7 +383,7 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
     if (creditsStr === null) return;
     const redeemsStr = prompt("Does this admission redeem a visit pass? (yes/no)", item.redeemsPass ? "yes" : "no");
     if (redeemsStr === null) return;
-    await showError(await fetch(`${API}/menu-items/${item.id}`, {
+    await showError(await authFetch(`/menu-items/${item.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -398,12 +399,12 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
 
   const deleteItem = async (id: number) => {
     if (!confirm("Delete this item? Existing bills are unaffected.")) return;
-    await showError(await fetch(`${API}/menu-items/${id}`, { method: "DELETE" }));
+    await showError(await authFetch(`/menu-items/${id}`, { method: "DELETE" }));
   };
 
   const saveTax = async () => {
     const rate = parseFloat(taxPercent) / 100;
-    await showError(await fetch(`${API}/settings`, {
+    await showError(await authFetch(`/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ taxRate: rate }),
@@ -412,7 +413,7 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
   };
 
   const saveDefaultAdmission = async () => {
-    await showError(await fetch(`${API}/settings`, {
+    await showError(await authFetch(`/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ defaultAdmissionItemId: defaultAdmission ? Number(defaultAdmission) : null }),
@@ -510,6 +511,9 @@ function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
 }
 
 function App() {
+  const [user, setUser] = useState<LoggedInUser | null>(
+    JSON.parse(localStorage.getItem("user") ?? "null")
+  );
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [activeVisits, setActiveVisits] = useState<Visit[]>([]);
@@ -526,25 +530,27 @@ function App() {
   const [lockerSearch, setLockerSearch] = useState("");
 
   const loadActiveVisits = () => {
-    fetch(`${API}/visits/active`).then((r) => r.json()).then(setActiveVisits);
+    authFetch(`/visits/active`).then((r) => r.json()).then(setActiveVisits);
   };
   const loadLockers = () => {
-    fetch(`${API}/lockers`).then((r) => r.json()).then(setLockers);
+    authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
   };
   const loadMenu = () => {
-    fetch(`${API}/categories`).then((r) => r.json()).then(setCategories);
+    authFetch(`/categories`).then((r) => r.json()).then(setCategories);
   };
   const loadCustomers = () => {
-    fetch(`${API}/customers`).then((r) => r.json()).then(setCustomers);
+    authFetch(`/customers`).then((r) => r.json()).then(setCustomers);
   };
   const loadSettings = () => {
-    fetch(`${API}/settings`).then((r) => r.json()).then((s) => {
+    authFetch(`/settings`).then((r) => r.json()).then((s) => {
       setTaxRate(s.taxRate);
       setDefaultAdmissionItemId(s.defaultAdmissionItemId);
     });
   };
 
   useEffect(() => {
+    if (!user) return; // signed out: nothing to load, no sockets to join
+
     loadCustomers();
     loadLockers();
     loadActiveVisits();
@@ -586,11 +592,24 @@ function App() {
       socket.off("menu:updated");
       socket.off("settings:updated");
     };
-  }, []);
+  }, [user]);
+
+  const handleLogin = (loggedIn: LoggedInUser, token: string) => {
+    localStorage.setItem("token", token);
+    localStorage.setItem("user", JSON.stringify(loggedIn));
+    setUser(loggedIn);
+  };
+
+  const signOut = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    setShowMenuEditor(false);
+    setUser(null);
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    await fetch(`${API}/customers`, {
+    await authFetch(`/customers`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ firstName, lastName, gender, phone, email }),
@@ -600,6 +619,10 @@ function App() {
     setPhone("");
     setEmail("");
   };
+
+  if (!user) {
+    return <Login onLogin={handleLogin} />;
+  }
 
   const query = search.trim().toLowerCase();
   const visibleCustomers = query
@@ -623,14 +646,20 @@ function App() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1>Sauna POS</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ color: "#666" }}>
+            {user.displayName} · {user.role === "ADMIN" ? "admin" : "staff"}
+          </span>
           <a href="/kitchen" target="_blank">Kitchen screen</a>
-          <button onClick={() => setShowMenuEditor((v) => !v)}>
-            {showMenuEditor ? "Close menu editor" : "Edit menu"}
-          </button>
+          {user.role === "ADMIN" && (
+            <button onClick={() => setShowMenuEditor((v) => !v)}>
+              {showMenuEditor ? "Close menu editor" : "Edit menu"}
+            </button>
+          )}
+          <button onClick={signOut}>Sign out</button>
         </div>
       </div>
 
-      {showMenuEditor && (
+      {showMenuEditor && user.role === "ADMIN" && (
         <MenuEditor
           categories={categories}
           taxRate={taxRate}

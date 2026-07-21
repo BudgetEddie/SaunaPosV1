@@ -1,8 +1,18 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import type { Request, Response, NextFunction } from "express";
+
+const JWT_SECRET = process.env.JWT_SECRET || "";
+if (!JWT_SECRET) {
+  console.error("JWT_SECRET is missing from server/.env — see the login guide, Part 2.");
+  process.exit(1);
+}
 
 const prisma = new PrismaClient();
 const app = express();
@@ -12,9 +22,58 @@ app.use(express.json());
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
+// ---- Auth ----
+
+type AuthedRequest = Request & { auth?: { userId: number; role: string } };
+
+function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  const header = req.headers.authorization;
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) {
+    return res.status(401).json({ error: "Sign in first" });
+  }
+  try {
+    req.auth = jwt.verify(token, JWT_SECRET) as { userId: number; role: string };
+    next();
+  } catch {
+    res.status(401).json({ error: "Session expired — sign in again" });
+  }
+}
+
+function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({ error: "Only the admin login can change the menu" });
+  }
+  next();
+}
+
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+app.post("/login", async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) {
+    return res.status(400).json({ error: "Enter both a name and a passphrase" });
+  }
+  const user = await prisma.user.findUnique({ where: { username: String(username).toLowerCase() } });
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    return res.status(401).json({ error: "Wrong name or passphrase" });
+  }
+  const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: "12h" });
+  res.json({ token, user: { username: user.username, displayName: user.displayName, role: user.role } });
+});
+
+app.get("/login-roster", async (_req, res) => {
+  const users = await prisma.user.findMany({
+    select: { username: true, displayName: true, role: true },
+    orderBy: { role: "asc" },
+  });
+  res.json(users);
+});
+
+// Everything below this line requires a signed-in user
+app.use(requireAuth);
 
 // ---- Settings ----
 
@@ -30,7 +89,7 @@ app.get("/settings", async (_req, res) => {
   res.json(await getSettings());
 });
 
-app.put("/settings", async (req, res) => {
+app.put("/settings", requireAdmin, async (req, res) => {
   const { taxRate, defaultAdmissionItemId } = req.body;
   const data: { taxRate?: number; defaultAdmissionItemId?: number | null } = {};
 
@@ -63,7 +122,7 @@ app.get("/categories", async (_req, res) => {
   res.json(categories);
 });
 
-app.post("/categories", async (req, res) => {
+app.post("/categories", requireAdmin, async (req, res) => {
   const { name, isKitchen, isAdmission } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   try {
@@ -77,7 +136,7 @@ app.post("/categories", async (req, res) => {
   }
 });
 
-app.put("/categories/:id", async (req, res) => {
+app.put("/categories/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const { name, isKitchen, isAdmission } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
@@ -89,7 +148,7 @@ app.put("/categories/:id", async (req, res) => {
   res.json(category);
 });
 
-app.delete("/categories/:id", async (req, res) => {
+app.delete("/categories/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const itemCount = await prisma.menuItem.count({ where: { categoryId: id } });
   if (itemCount > 0) {
@@ -100,7 +159,7 @@ app.delete("/categories/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/menu-items", async (req, res) => {
+app.post("/menu-items", requireAdmin, async (req, res) => {
   const { categoryId, name, price, description, visitCredits, redeemsPass } = req.body;
   if (!categoryId || !name || typeof price !== "number") {
     return res.status(400).json({ error: "categoryId, name, and price are required" });
@@ -119,7 +178,7 @@ app.post("/menu-items", async (req, res) => {
   res.status(201).json(item);
 });
 
-app.put("/menu-items/:id", async (req, res) => {
+app.put("/menu-items/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   const { categoryId, name, price, description, visitCredits, redeemsPass } = req.body;
   const item = await prisma.menuItem.update({
@@ -137,7 +196,7 @@ app.put("/menu-items/:id", async (req, res) => {
   res.json(item);
 });
 
-app.delete("/menu-items/:id", async (req, res) => {
+app.delete("/menu-items/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
   await prisma.menuItem.delete({ where: { id } });
   io.emit("menu:updated", {});
@@ -225,7 +284,7 @@ app.post("/check-in", async (req, res) => {
   const settings = await getSettings();
   const bill = await prisma.bill.create({ data: { visitId: newVisit.id, taxRate: settings.taxRate } });
 
-// Pick the admission to auto-apply: a pass redemption if the customer has
+  // Pick the admission to auto-apply: a pass redemption if the customer has
   // passes banked, otherwise the configured default admission.
   // visitCredits: 0 keeps pass PACKS (items that sell credits) out of the search.
   const passAdmission = customer.visitPassBalance >= 1
