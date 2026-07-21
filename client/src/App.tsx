@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
+import { groupItems } from "./groupItems.ts";
 
 const socket = io("http://localhost:4000");
 const API = "http://localhost:4000";
@@ -160,7 +161,7 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
           <ul style={{ margin: 4 }}>
             {visit.orders.filter((o) => o.status !== "COMPLETE").map((o) => (
               <li key={o.id}>
-                {o.items.map((i) => i.name).join(", ")} — <em>{o.status.replace("_", " ").toLowerCase()}</em>
+                {groupItems(o.items).map((g) => `${g.name} x${g.count}`).join(", ")} — <em>{o.status.replace("_", " ").toLowerCase()}</em>
               </li>
             ))}
           </ul>

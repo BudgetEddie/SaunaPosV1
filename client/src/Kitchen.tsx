@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
+import { groupItems } from "./groupItems.ts";
 
 const socket = io("http://localhost:4000");
 const API = "http://localhost:4000";
@@ -66,8 +67,8 @@ function Kitchen() {
                   {" — "}{o.visit.locker.number}
                   <span style={{ float: "right", color: "#666" }}>{minutesAgo(o.createdAt)} min</span>
                   <ul>
-                    {o.items.map((item) => (
-                      <li key={item.id}>{item.name}</li>
+                    {groupItems(o.items).map((g) => (
+                      <li key={g.name}>{g.name} x{g.count}</li>
                     ))}
                   </ul>
                   <button onClick={() => setStatus(o.id, col.next)} style={{ width: "100%" }}>
