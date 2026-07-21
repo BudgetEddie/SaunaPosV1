@@ -31,14 +31,23 @@ app.get("/settings", async (_req, res) => {
 });
 
 app.put("/settings", async (req, res) => {
-  const { taxRate } = req.body;
-  if (typeof taxRate !== "number" || taxRate < 0 || taxRate > 1) {
-    return res.status(400).json({ error: "taxRate must be a number between 0 and 1 (e.g. 0.13 for 13%)" });
+  const { taxRate, defaultAdmissionItemId } = req.body;
+  const data: { taxRate?: number; defaultAdmissionItemId?: number | null } = {};
+
+  if (taxRate !== undefined) {
+    if (typeof taxRate !== "number" || taxRate < 0 || taxRate > 1) {
+      return res.status(400).json({ error: "taxRate must be a number between 0 and 1 (e.g. 0.13 for 13%)" });
+    }
+    data.taxRate = taxRate;
   }
+  if (defaultAdmissionItemId !== undefined) {
+    data.defaultAdmissionItemId = defaultAdmissionItemId === null ? null : Number(defaultAdmissionItemId);
+  }
+
   const settings = await prisma.settings.upsert({
     where: { id: 1 },
-    update: { taxRate },
-    create: { id: 1, taxRate },
+    update: data,
+    create: { id: 1, taxRate: data.taxRate ?? 0.13, defaultAdmissionItemId: data.defaultAdmissionItemId ?? null },
   });
   io.emit("settings:updated", settings);
   res.json(settings);
@@ -55,10 +64,12 @@ app.get("/categories", async (_req, res) => {
 });
 
 app.post("/categories", async (req, res) => {
-  const { name, isKitchen } = req.body;
+  const { name, isKitchen, isAdmission } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   try {
-    const category = await prisma.category.create({ data: { name, isKitchen: Boolean(isKitchen) } });
+    const category = await prisma.category.create({
+      data: { name, isKitchen: Boolean(isKitchen), isAdmission: Boolean(isAdmission) },
+    });
     io.emit("menu:updated", {});
     res.status(201).json(category);
   } catch {
@@ -68,11 +79,11 @@ app.post("/categories", async (req, res) => {
 
 app.put("/categories/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { name, isKitchen } = req.body;
+  const { name, isKitchen, isAdmission } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   const category = await prisma.category.update({
     where: { id },
-    data: { name, isKitchen: Boolean(isKitchen) },
+    data: { name, isKitchen: Boolean(isKitchen), isAdmission: Boolean(isAdmission) },
   });
   io.emit("menu:updated", {});
   res.json(category);
@@ -90,21 +101,37 @@ app.delete("/categories/:id", async (req, res) => {
 });
 
 app.post("/menu-items", async (req, res) => {
-  const { categoryId, name, price, description } = req.body;
+  const { categoryId, name, price, description, visitCredits, redeemsPass } = req.body;
   if (!categoryId || !name || typeof price !== "number") {
     return res.status(400).json({ error: "categoryId, name, and price are required" });
   }
-  const item = await prisma.menuItem.create({ data: { categoryId, name, price, description } });
+  const item = await prisma.menuItem.create({
+    data: {
+      categoryId,
+      name,
+      price,
+      description,
+      visitCredits: visitCredits || 0,
+      redeemsPass: Boolean(redeemsPass),
+    },
+  });
   io.emit("menu:updated", {});
   res.status(201).json(item);
 });
 
 app.put("/menu-items/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { categoryId, name, price, description } = req.body;
+  const { categoryId, name, price, description, visitCredits, redeemsPass } = req.body;
   const item = await prisma.menuItem.update({
     where: { id },
-    data: { categoryId, name, price, description },
+    data: {
+      categoryId,
+      name,
+      price,
+      description,
+      visitCredits: visitCredits || 0,
+      redeemsPass: Boolean(redeemsPass),
+    },
   });
   io.emit("menu:updated", {});
   res.json(item);
@@ -197,11 +224,85 @@ app.post("/check-in", async (req, res) => {
 
   const settings = await getSettings();
   const bill = await prisma.bill.create({ data: { visitId: newVisit.id, taxRate: settings.taxRate } });
-  const visit = { ...newVisit, customer, locker: updatedLocker, bill: { ...bill, lineItems: [] } };
+
+// Pick the admission to auto-apply: a pass redemption if the customer has
+  // passes banked, otherwise the configured default admission.
+  // visitCredits: 0 keeps pass PACKS (items that sell credits) out of the search.
+  const passAdmission = customer.visitPassBalance >= 1
+    ? await prisma.menuItem.findFirst({
+        where: { redeemsPass: true, visitCredits: 0, category: { isAdmission: true } },
+      })
+    : null;
+  const admissionItem = passAdmission ??
+    (settings.defaultAdmissionItemId
+      ? await prisma.menuItem.findUnique({ where: { id: settings.defaultAdmissionItemId } })
+      : null);
+  const admissionLine = admissionItem
+    ? await prisma.billLineItem.create({
+        data: { billId: bill.id, description: admissionItem.name, amount: admissionItem.price, isAdmission: true },
+      })
+    : null;
+  const checkedInVisit = passAdmission
+    ? await prisma.visit.update({ where: { id: newVisit.id }, data: { redeemsPass: true } })
+    : newVisit;
+
+  const visit = {
+    ...checkedInVisit,
+    customer,
+    locker: updatedLocker,
+    bill: { ...bill, lineItems: admissionLine ? [admissionLine] : [] },
+  };
 
   io.emit("locker:updated", updatedLocker);
   io.emit("visit:checked-in", visit);
   res.status(201).json(visit);
+});
+
+// Set (or replace) this visit's single admission charge
+app.post("/visits/:visitId/set-admission", async (req, res) => {
+  const visitId = Number(req.params.visitId);
+  const { menuItemId } = req.body;
+
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: { bill: true, customer: true },
+  });
+  if (!visit || visit.checkOutAt || !visit.bill) {
+    return res.status(404).json({ error: "Active visit not found" });
+  }
+
+  const item = await prisma.menuItem.findUnique({
+    where: { id: menuItemId },
+    include: { category: true },
+  });
+  if (!item) {
+    return res.status(404).json({ error: "Menu item not found" });
+  }
+  if (item.visitCredits > 0) {
+    return res.status(400).json({
+      error: `"${item.name}" sells ${item.visitCredits} visit passes — it can't be used as an admission type`,
+    });
+  }
+  if (!item.category.isAdmission) {
+    return res.status(400).json({ error: `"${item.name}" is not an admission type` });
+  }
+  if (item.redeemsPass && visit.customer.visitPassBalance < 1) {
+    return res.status(409).json({
+      error: `${visit.customer.firstName} ${visit.customer.lastName} has no visit passes remaining`,
+    });
+  }
+
+  const billId = visit.bill.id;
+  await prisma.$transaction([
+    prisma.billLineItem.deleteMany({ where: { billId, isAdmission: true } }),
+    prisma.billLineItem.create({
+      data: { billId, description: item.name, amount: item.price, isAdmission: true },
+    }),
+    prisma.visit.update({ where: { id: visitId }, data: { redeemsPass: item.redeemsPass } }),
+  ]);
+
+  io.emit("bill:line-item-added", { billId });
+  res.json({ ok: true });
 });
 
 app.post("/visits/:visitId/change-locker", async (req, res) => {
@@ -276,6 +377,33 @@ app.post("/visits/:visitId/order-item", async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
+// Sell a visit pass: bill it AND credit the customer's balance, atomically
+app.post("/visits/:visitId/purchase-pass", async (req, res) => {
+  const visitId = Number(req.params.visitId);
+  const { name, amount, visitCredits } = req.body;
+  if (!name || typeof amount !== "number" || typeof visitCredits !== "number" || visitCredits <= 0) {
+    return res.status(400).json({ error: "name, amount, and a positive visitCredits are required" });
+  }
+
+  const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { bill: true } });
+  if (!visit || visit.checkOutAt || !visit.bill) {
+    return res.status(404).json({ error: "Active visit not found" });
+  }
+  const billId = visit.bill.id;
+
+  const updatedCustomer = await prisma.$transaction(async (tx) => {
+    await tx.billLineItem.create({ data: { billId, description: name, amount } });
+    return tx.customer.update({
+      where: { id: visit.customerId },
+      data: { visitPassBalance: { increment: visitCredits } },
+    });
+  });
+
+  io.emit("bill:line-item-added", { billId });
+  io.emit("customer:updated", updatedCustomer);
+  res.status(201).json({ ok: true, visitPassBalance: updatedCustomer.visitPassBalance });
+});
+
 // ---- Kitchen ----
 
 app.get("/orders/open", async (_req, res) => {
@@ -303,27 +431,52 @@ app.post("/check-out", async (req, res) => {
   if (!paymentMethod) {
     return res.status(400).json({ error: "paymentMethod is required to check out" });
   }
-  const visit = await prisma.visit.findUnique({ where: { id: visitId } });
+  const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { customer: true } });
   if (!visit || visit.checkOutAt) {
     return res.status(404).json({ error: "Active visit not found" });
   }
+  if (visit.redeemsPass && visit.customer.visitPassBalance < 1) {
+    return res.status(409).json({
+      error: "This visit is set to use a pass, but the customer has none remaining. Change their admission type.",
+    });
+  }
 
-  const [updatedVisit, updatedLocker, updatedBill] = await prisma.$transaction([
-    prisma.visit.update({ where: { id: visitId }, data: { checkOutAt: new Date() } }),
-    prisma.locker.update({ where: { id: visit.lockerId }, data: { status: "AVAILABLE" } }),
-    prisma.bill.update({ where: { visitId }, data: { paymentMethod, paidAt: new Date() } }),
-  ]);
+  const { updatedVisit, updatedLocker, updatedBill, updatedCustomer } = await prisma.$transaction(async (tx) => {
+    const updatedVisit = await tx.visit.update({
+      where: { id: visitId },
+      data: { checkOutAt: new Date() },
+    });
+    const updatedLocker = await tx.locker.update({
+      where: { id: visit.lockerId },
+      data: { status: "AVAILABLE" },
+    });
+    const updatedBill = await tx.bill.update({
+      where: { visitId },
+      data: { paymentMethod, paidAt: new Date() },
+    });
 
-  // Clear any of this visit's unfinished kitchen orders off the kitchen screen
-  await prisma.order.updateMany({
-    where: { visitId, status: { not: "COMPLETE" } },
-    data: { status: "COMPLETE" },
+    // Clear any of this visit's unfinished kitchen orders off the kitchen screen
+    await tx.order.updateMany({
+      where: { visitId, status: { not: "COMPLETE" } },
+      data: { status: "COMPLETE" },
+    });
+
+    // Spend one visit pass, if this visit was checked in on one
+    const updatedCustomer = visit.redeemsPass
+      ? await tx.customer.update({
+          where: { id: visit.customerId },
+          data: { visitPassBalance: { decrement: 1 } },
+        })
+      : null;
+
+    return { updatedVisit, updatedLocker, updatedBill, updatedCustomer };
   });
 
   io.emit("visit:checked-out", updatedVisit);
   io.emit("locker:updated", updatedLocker);
   io.emit("bill:paid", updatedBill);
   io.emit("orders:changed", {});
+  if (updatedCustomer) io.emit("customer:updated", updatedCustomer);
   res.json({ visit: updatedVisit, bill: updatedBill });
 });
 

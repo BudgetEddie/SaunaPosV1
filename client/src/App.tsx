@@ -12,18 +12,34 @@ type Customer = {
   gender: string;
   phone: string | null;
   email: string | null;
+  visitPassBalance: number;
 };
 
 type Locker = { id: number; number: string; gender: string; status: string };
 
-type MenuItem = { id: number; categoryId: number; name: string; price: number; description: string | null };
-type Category = { id: number; name: string; isKitchen: boolean; items: MenuItem[] };
+type MenuItem = {
+  id: number;
+  categoryId: number;
+  name: string;
+  price: number;
+  description: string | null;
+  visitCredits: number;
+  redeemsPass: boolean;
+};
+type Category = { id: number; name: string; isKitchen: boolean; isAdmission: boolean; items: MenuItem[] };
 
-type BillLineItem = { id: number; description: string; amount: number };
+type BillLineItem = { id: number; description: string; amount: number; isAdmission: boolean };
 type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 
 type Order = { id: number; status: string; items: { id: number; name: string }[] };
-type Visit = { id: number; customer: Customer; locker: Locker; bill: Bill; orders: Order[] };
+type Visit = {
+  id: number;
+  customer: Customer;
+  locker: Locker;
+  bill: Bill;
+  orders: Order[];
+  redeemsPass: boolean;
+};
 
 function billTotal(bill: Bill) {
   const subtotal = bill.lineItems.reduce((sum, item) => sum + item.amount, 0);
@@ -89,12 +105,47 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
     (l) => l.gender === visit.customer.gender && l.status === "AVAILABLE"
   );
 
+  const showError = async (res: Response) => {
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+    }
+  };
+
   const addLineItem = async (desc: string, amt: number) => {
     await fetch(`${API}/bills/${visit.bill.id}/line-items`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ description: desc, amount: amt }),
     });
+  };
+
+  const pickItem = async (item: MenuItem) => {
+    const category = categories.find((c) => c.id === item.categoryId);
+
+    if (item.visitCredits > 0) {
+      // Selling a pass pack wins over everything, whatever category it lives in
+      await fetch(`${API}/visits/${visit.id}/purchase-pass`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: item.name, amount: item.price, visitCredits: item.visitCredits }),
+      });
+    } else if (category?.isAdmission) {
+      await showError(await fetch(`${API}/visits/${visit.id}/set-admission`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ menuItemId: item.id }),
+      }));
+    } else if (category?.isKitchen) {
+      await fetch(`${API}/visits/${visit.id}/order-item`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: item.name, amount: item.price }),
+      });
+    } else {
+      await addLineItem(item.name, item.price);
+    }
+    onChanged();
   };
 
   const addCustomCharge = async (e: FormEvent) => {
@@ -107,61 +158,55 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
 
   const changeLocker = async () => {
     if (!newLockerId) return;
-    const res = await fetch(`${API}/visits/${visit.id}/change-locker`, {
+    await showError(await fetch(`${API}/visits/${visit.id}/change-locker`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ lockerId: Number(newLockerId) }),
-    });
-    if (!res.ok) {
-      const { error } = await res.json();
-      alert(error);
-    }
+    }));
     setNewLockerId("");
     onChanged();
   };
 
   const checkOut = async () => {
-    await fetch(`${API}/check-out`, {
+    await showError(await fetch(`${API}/check-out`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ visitId: visit.id, paymentMethod }),
-    });
+    }));
     onChanged();
   };
+
+  const openOrders = visit.orders.filter((o) => o.status !== "COMPLETE");
 
   return (
     <li style={{ padding: 12, borderBottom: "1px solid #ddd" }}>
       <strong>{visit.customer.firstName} {visit.customer.lastName}</strong> — locker {visit.locker.number}
+      {" — "}
+      <span style={{ color: "#666" }}>
+        {visit.customer.visitPassBalance} pass{visit.customer.visitPassBalance === 1 ? "" : "es"} left
+      </span>
+      {visit.redeemsPass && <strong style={{ color: "#0a7" }}> · on a pass</strong>}
+
       <ul>
         {visit.bill.lineItems.map((item) => (
-          <li key={item.id}>{item.description} — ${item.amount.toFixed(2)}</li>
+          <li key={item.id}>
+            {item.description} — ${item.amount.toFixed(2)}
+            {item.isAdmission ? <em style={{ color: "#666" }}> (admission)</em> : ""}
+          </li>
         ))}
       </ul>
       <div>Subtotal ${subtotal.toFixed(2)} + tax ${tax.toFixed(2)} = <strong>${total.toFixed(2)}</strong></div>
 
-      <MenuPicker
-        categories={categories}
-        onPick={async (item) => {
-          const category = categories.find((c) => c.id === item.categoryId);
-          if (category?.isKitchen) {
-            await fetch(`${API}/visits/${visit.id}/order-item`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name: item.name, amount: item.price }),
-            });
-          } else {
-            await addLineItem(item.name, item.price);
-          }
-        }}
-      />
+      <MenuPicker categories={categories} onPick={pickItem} />
 
-      {visit.orders.filter((o) => o.status !== "COMPLETE").length > 0 && (
+      {openOrders.length > 0 && (
         <div style={{ marginTop: 8, padding: 8, background: "#f4f4f4", borderRadius: 6 }}>
           <strong>Kitchen orders</strong>
           <ul style={{ margin: 4 }}>
-            {visit.orders.filter((o) => o.status !== "COMPLETE").map((o) => (
+            {openOrders.map((o) => (
               <li key={o.id}>
-                {groupItems(o.items).map((g) => `${g.name} x${g.count}`).join(", ")} — <em>{o.status.replace("_", " ").toLowerCase()}</em>
+                {groupItems(o.items).map((g) => `${g.name} x${g.count}`).join(", ")} —{" "}
+                <em>{o.status.replace("_", " ").toLowerCase()}</em>
               </li>
             ))}
           </ul>
@@ -184,7 +229,6 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
           <option value="CASH">Cash</option>
           <option value="CARD">Card</option>
           <option value="GIFT_CARD">Gift card</option>
-          <option value="VISIT_PASS">Visit pass</option>
         </select>
         <button onClick={checkOut}>Check out &amp; pay</button>
       </div>
@@ -222,7 +266,8 @@ function CustomerRow({ customer, lockers, isCheckedIn, onCheckedIn }: {
   return (
     <li style={{ padding: 8, borderBottom: "1px solid #ddd" }}>
       <strong>{customer.firstName} {customer.lastName}</strong> — {customer.gender}
-      {customer.phone ? ` · ${customer.phone}` : ""}{" "}
+      {customer.phone ? ` · ${customer.phone}` : ""}
+      {customer.visitPassBalance > 0 ? ` · ${customer.visitPassBalance} passes` : ""}{" "}
       {isCheckedIn ? (
         <em>checked in</em>
       ) : (
@@ -235,14 +280,27 @@ function CustomerRow({ customer, lockers, isCheckedIn, onCheckedIn }: {
   );
 }
 
-function MenuEditor({ categories, taxRate, onClose }: { categories: Category[]; taxRate: number; onClose: () => void }) {
+function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
+  categories: Category[];
+  taxRate: number;
+  defaultAdmissionItemId: number | null;
+  onClose: () => void;
+}) {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryKitchen, setNewCategoryKitchen] = useState(false);
+  const [newCategoryAdmission, setNewCategoryAdmission] = useState(false);
   const [taxPercent, setTaxPercent] = useState(String((taxRate * 100).toFixed(2)));
+  const [defaultAdmission, setDefaultAdmission] = useState(
+    defaultAdmissionItemId ? String(defaultAdmissionItemId) : ""
+  );
   const [itemCategoryId, setItemCategoryId] = useState("");
   const [itemName, setItemName] = useState("");
   const [itemPrice, setItemPrice] = useState("");
   const [itemDescription, setItemDescription] = useState("");
+  const [itemVisitCredits, setItemVisitCredits] = useState("");
+  const [itemRedeemsPass, setItemRedeemsPass] = useState(false);
+
+  const admissionItems = categories.filter((c) => c.isAdmission).flatMap((c) => c.items);
 
   const showError = async (res: Response) => {
     if (!res.ok) {
@@ -257,27 +315,33 @@ function MenuEditor({ categories, taxRate, onClose }: { categories: Category[]; 
     await showError(await fetch(`${API}/categories`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newCategoryName, isKitchen: newCategoryKitchen }),
+      body: JSON.stringify({
+        name: newCategoryName,
+        isKitchen: newCategoryKitchen,
+        isAdmission: newCategoryAdmission,
+      }),
     }));
     setNewCategoryName("");
+    setNewCategoryKitchen(false);
+    setNewCategoryAdmission(false);
   };
 
-const renameCategory = async (c: Category) => {
+  const updateCategory = async (c: Category, changes: Partial<Category>) => {
+    await showError(await fetch(`${API}/categories/${c.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: changes.name ?? c.name,
+        isKitchen: changes.isKitchen ?? c.isKitchen,
+        isAdmission: changes.isAdmission ?? c.isAdmission,
+      }),
+    }));
+  };
+
+  const renameCategory = async (c: Category) => {
     const name = prompt("New category name:", c.name);
     if (!name || name === c.name) return;
-    await showError(await fetch(`${API}/categories/${c.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, isKitchen: c.isKitchen }),
-    }));
-  };
-
-  const toggleKitchen = async (c: Category) => {
-    await showError(await fetch(`${API}/categories/${c.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: c.name, isKitchen: !c.isKitchen }),
-    }));
+    await updateCategory(c, { name });
   };
 
   const deleteCategory = async (id: number) => {
@@ -296,11 +360,15 @@ const renameCategory = async (c: Category) => {
         name: itemName,
         price: parseFloat(itemPrice),
         description: itemDescription || null,
+        visitCredits: itemVisitCredits ? parseInt(itemVisitCredits, 10) : 0,
+        redeemsPass: itemRedeemsPass,
       }),
     }));
     setItemName("");
     setItemPrice("");
     setItemDescription("");
+    setItemVisitCredits("");
+    setItemRedeemsPass(false);
   };
 
   const editItem = async (item: MenuItem) => {
@@ -310,6 +378,10 @@ const renameCategory = async (c: Category) => {
     if (priceStr === null) return;
     const description = prompt("Description (optional):", item.description ?? "");
     if (description === null) return;
+    const creditsStr = prompt("Visit credits granted when sold (0 for a normal item):", String(item.visitCredits));
+    if (creditsStr === null) return;
+    const redeemsStr = prompt("Does this admission redeem a visit pass? (yes/no)", item.redeemsPass ? "yes" : "no");
+    if (redeemsStr === null) return;
     await showError(await fetch(`${API}/menu-items/${item.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -318,6 +390,8 @@ const renameCategory = async (c: Category) => {
         name: name || item.name,
         price: parseFloat(priceStr) || item.price,
         description: description || null,
+        visitCredits: parseInt(creditsStr, 10) || 0,
+        redeemsPass: redeemsStr.trim().toLowerCase().startsWith("y"),
       }),
     }));
   };
@@ -337,6 +411,15 @@ const renameCategory = async (c: Category) => {
     alert("Tax rate saved. Applies to new check-ins; existing bills keep their rate.");
   };
 
+  const saveDefaultAdmission = async () => {
+    await showError(await fetch(`${API}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ defaultAdmissionItemId: defaultAdmission ? Number(defaultAdmission) : null }),
+    }));
+    alert("Default admission saved. Applies to new check-ins.");
+  };
+
   return (
     <div style={{ border: "2px solid #333", padding: 16, marginBottom: 24 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -350,26 +433,52 @@ const renameCategory = async (c: Category) => {
         <button onClick={saveTax}>Save tax rate</button>
       </div>
 
+      <h3>Default admission</h3>
+      <p style={{ color: "#666", margin: "4px 0" }}>
+        Billed automatically at check-in. Staff can override it per visit. Pick a paying admission here, not the pass one.
+      </p>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <select value={defaultAdmission} onChange={(e) => setDefaultAdmission(e.target.value)}>
+          <option value="">No automatic admission charge</option>
+          {admissionItems.map((i) => (
+            <option key={i.id} value={i.id}>{i.name} — ${i.price.toFixed(2)}</option>
+          ))}
+        </select>
+        <button onClick={saveDefaultAdmission}>Save default</button>
+      </div>
+
       <h3>Categories</h3>
-      <form onSubmit={addCategory} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+      <form onSubmit={addCategory} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
         <input placeholder="New category name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
         <label>
           <input type="checkbox" checked={newCategoryKitchen} onChange={(e) => setNewCategoryKitchen(e.target.checked)} /> kitchen
+        </label>
+        <label>
+          <input type="checkbox" checked={newCategoryAdmission} onChange={(e) => setNewCategoryAdmission(e.target.checked)} /> admission
         </label>
         <button type="submit">Add category</button>
       </form>
       <ul style={{ listStyle: "none", padding: 0 }}>
         {categories.map((c) => (
           <li key={c.id} style={{ padding: 6, borderBottom: "1px solid #eee" }}>
-            <strong>{c.name}</strong> ({c.items.length} items){c.isKitchen ? " · kitchen" : ""}{" "}
-            <button onClick={() => toggleKitchen(c)}>{c.isKitchen ? "Unset kitchen" : "Set kitchen"}</button>{" "}
-            <button onClick={() => renameCategory(c)}>Rename</button>
+            <strong>{c.name}</strong> ({c.items.length} items)
+            {c.isKitchen ? " · kitchen" : ""}
+            {c.isAdmission ? " · admission" : ""}{" "}
+            <button onClick={() => updateCategory(c, { isKitchen: !c.isKitchen })}>
+              {c.isKitchen ? "Unset kitchen" : "Set kitchen"}
+            </button>{" "}
+            <button onClick={() => updateCategory(c, { isAdmission: !c.isAdmission })}>
+              {c.isAdmission ? "Unset admission" : "Set admission"}
+            </button>{" "}
+            <button onClick={() => renameCategory(c)}>Rename</button>{" "}
             <button onClick={() => deleteCategory(c.id)}>Delete</button>
             <ul>
               {c.items.map((item) => (
                 <li key={item.id}>
                   {item.name} — ${item.price.toFixed(2)}
-                  {item.description ? ` · ${item.description}` : ""}{" "}
+                  {item.description ? ` · ${item.description}` : ""}
+                  {item.visitCredits > 0 ? ` · grants ${item.visitCredits} visits` : ""}
+                  {item.redeemsPass ? " · redeems a pass" : ""}{" "}
                   <button onClick={() => editItem(item)}>Edit</button>{" "}
                   <button onClick={() => deleteItem(item.id)}>Delete</button>
                 </li>
@@ -380,7 +489,7 @@ const renameCategory = async (c: Category) => {
       </ul>
 
       <h3>Add item</h3>
-      <form onSubmit={addItem} style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 360 }}>
+      <form onSubmit={addItem} style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 420 }}>
         <select value={itemCategoryId} onChange={(e) => setItemCategoryId(e.target.value)}>
           <option value="">Select category…</option>
           {categories.map((c) => (
@@ -390,6 +499,10 @@ const renameCategory = async (c: Category) => {
         <input placeholder="Item name" value={itemName} onChange={(e) => setItemName(e.target.value)} />
         <input placeholder="Price" type="number" step="0.01" value={itemPrice} onChange={(e) => setItemPrice(e.target.value)} />
         <input placeholder="Description (optional)" value={itemDescription} onChange={(e) => setItemDescription(e.target.value)} />
+        <input placeholder="Visit credits granted when sold (e.g. 10)" type="number" value={itemVisitCredits} onChange={(e) => setItemVisitCredits(e.target.value)} />
+        <label>
+          <input type="checkbox" checked={itemRedeemsPass} onChange={(e) => setItemRedeemsPass(e.target.checked)} /> this admission redeems a visit pass
+        </label>
         <button type="submit">Add item</button>
       </form>
     </div>
@@ -402,6 +515,7 @@ function App() {
   const [activeVisits, setActiveVisits] = useState<Visit[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [taxRate, setTaxRate] = useState(0.13);
+  const [defaultAdmissionItemId, setDefaultAdmissionItemId] = useState<number | null>(null);
   const [showMenuEditor, setShowMenuEditor] = useState(false);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -420,12 +534,18 @@ function App() {
   const loadMenu = () => {
     fetch(`${API}/categories`).then((r) => r.json()).then(setCategories);
   };
+  const loadCustomers = () => {
+    fetch(`${API}/customers`).then((r) => r.json()).then(setCustomers);
+  };
   const loadSettings = () => {
-    fetch(`${API}/settings`).then((r) => r.json()).then((s) => setTaxRate(s.taxRate));
+    fetch(`${API}/settings`).then((r) => r.json()).then((s) => {
+      setTaxRate(s.taxRate);
+      setDefaultAdmissionItemId(s.defaultAdmissionItemId);
+    });
   };
 
   useEffect(() => {
-    fetch(`${API}/customers`).then((r) => r.json()).then(setCustomers);
+    loadCustomers();
     loadLockers();
     loadActiveVisits();
     loadMenu();
@@ -433,6 +553,10 @@ function App() {
 
     socket.on("customer:created", (customer: Customer) => {
       setCustomers((prev) => [customer, ...prev]);
+    });
+    socket.on("customer:updated", () => {
+      loadCustomers();
+      loadActiveVisits();
     });
     socket.on("locker:updated", (locker: Locker) => {
       setLockers((prev) => prev.map((l) => (l.id === locker.id ? locker : l)));
@@ -445,16 +569,20 @@ function App() {
     socket.on("bill:line-item-added", () => loadActiveVisits());
     socket.on("orders:changed", () => loadActiveVisits());
     socket.on("menu:updated", () => loadMenu());
-    socket.on("settings:updated", (s: { taxRate: number }) => setTaxRate(s.taxRate));
+    socket.on("settings:updated", (s: { taxRate: number; defaultAdmissionItemId: number | null }) => {
+      setTaxRate(s.taxRate);
+      setDefaultAdmissionItemId(s.defaultAdmissionItemId);
+    });
 
     return () => {
-      socket.off("orders:changed");
       socket.off("customer:created");
+      socket.off("customer:updated");
       socket.off("locker:updated");
       socket.off("visit:checked-in");
       socket.off("visit:locker-changed");
       socket.off("visit:checked-out");
       socket.off("bill:line-item-added");
+      socket.off("orders:changed");
       socket.off("menu:updated");
       socket.off("settings:updated");
     };
@@ -494,7 +622,7 @@ function App() {
     <div style={{ padding: 40, fontFamily: "sans-serif", maxWidth: 760 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1>Sauna POS</h1>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <a href="/kitchen" target="_blank">Kitchen screen</a>
           <button onClick={() => setShowMenuEditor((v) => !v)}>
             {showMenuEditor ? "Close menu editor" : "Edit menu"}
@@ -503,7 +631,12 @@ function App() {
       </div>
 
       {showMenuEditor && (
-        <MenuEditor categories={categories} taxRate={taxRate} onClose={() => setShowMenuEditor(false)} />
+        <MenuEditor
+          categories={categories}
+          taxRate={taxRate}
+          defaultAdmissionItemId={defaultAdmissionItemId}
+          onClose={() => setShowMenuEditor(false)}
+        />
       )}
 
       <h2>Occupancy</h2>
