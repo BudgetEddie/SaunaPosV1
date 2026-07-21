@@ -55,10 +55,10 @@ app.get("/categories", async (_req, res) => {
 });
 
 app.post("/categories", async (req, res) => {
-  const { name } = req.body;
+  const { name, isKitchen } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   try {
-    const category = await prisma.category.create({ data: { name } });
+    const category = await prisma.category.create({ data: { name, isKitchen: Boolean(isKitchen) } });
     io.emit("menu:updated", {});
     res.status(201).json(category);
   } catch {
@@ -68,9 +68,12 @@ app.post("/categories", async (req, res) => {
 
 app.put("/categories/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const { name } = req.body;
+  const { name, isKitchen } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
-  const category = await prisma.category.update({ where: { id }, data: { name } });
+  const category = await prisma.category.update({
+    where: { id },
+    data: { name, isKitchen: Boolean(isKitchen) },
+  });
   io.emit("menu:updated", {});
   res.json(category);
 });
@@ -154,7 +157,12 @@ app.post("/lockers", async (req, res) => {
 app.get("/visits/active", async (_req, res) => {
   const visits = await prisma.visit.findMany({
     where: { checkOutAt: null },
-    include: { customer: true, locker: true, bill: { include: { lineItems: true } } },
+    include: {
+      customer: true,
+      locker: true,
+      bill: { include: { lineItems: true } },
+      orders: { include: { items: true }, orderBy: { createdAt: "desc" } },
+    },
     orderBy: { checkInAt: "desc" },
   });
   res.json(visits);
@@ -239,6 +247,57 @@ app.post("/bills/:billId/line-items", async (req, res) => {
   res.status(201).json(lineItem);
 });
 
+// Add a kitchen item: bill it AND put it on the customer's open kitchen order, atomically
+app.post("/visits/:visitId/order-item", async (req, res) => {
+  const visitId = Number(req.params.visitId);
+  const { name, amount } = req.body;
+  if (!name || typeof amount !== "number") {
+    return res.status(400).json({ error: "name and amount are required" });
+  }
+
+  const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { bill: true } });
+  if (!visit || visit.checkOutAt || !visit.bill) {
+    return res.status(404).json({ error: "Active visit not found" });
+  }
+  const billId = visit.bill.id;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.billLineItem.create({ data: { billId, description: name, amount } });
+
+    let order = await tx.order.findFirst({ where: { visitId, status: "QUEUED" } });
+    if (!order) {
+      order = await tx.order.create({ data: { visitId } });
+    }
+    await tx.orderItem.create({ data: { orderId: order.id, name } });
+  });
+
+  io.emit("bill:line-item-added", { billId });
+  io.emit("orders:changed", {});
+  res.status(201).json({ ok: true });
+});
+
+// ---- Kitchen ----
+
+app.get("/orders/open", async (_req, res) => {
+  const orders = await prisma.order.findMany({
+    where: { status: { not: "COMPLETE" } },
+    include: { items: true, visit: { include: { customer: true, locker: true } } },
+    orderBy: { createdAt: "asc" },
+  });
+  res.json(orders);
+});
+
+app.post("/orders/:id/status", async (req, res) => {
+  const id = Number(req.params.id);
+  const { status } = req.body;
+  if (!["QUEUED", "IN_PROGRESS", "READY", "COMPLETE"].includes(status)) {
+    return res.status(400).json({ error: "Invalid status" });
+  }
+  const order = await prisma.order.update({ where: { id }, data: { status } });
+  io.emit("orders:changed", {});
+  res.json(order);
+});
+
 app.post("/check-out", async (req, res) => {
   const { visitId, paymentMethod } = req.body;
   if (!paymentMethod) {
@@ -255,9 +314,16 @@ app.post("/check-out", async (req, res) => {
     prisma.bill.update({ where: { visitId }, data: { paymentMethod, paidAt: new Date() } }),
   ]);
 
+  // Clear any of this visit's unfinished kitchen orders off the kitchen screen
+  await prisma.order.updateMany({
+    where: { visitId, status: { not: "COMPLETE" } },
+    data: { status: "COMPLETE" },
+  });
+
   io.emit("visit:checked-out", updatedVisit);
   io.emit("locker:updated", updatedLocker);
   io.emit("bill:paid", updatedBill);
+  io.emit("orders:changed", {});
   res.json({ visit: updatedVisit, bill: updatedBill });
 });
 

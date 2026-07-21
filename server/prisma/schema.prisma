@@ -25,15 +25,23 @@ enum PaymentMethod {
   VISIT_PASS
 }
 
+enum OrderStatus {
+  QUEUED
+  IN_PROGRESS
+  READY
+  COMPLETE
+}
+
 model Settings {
   id      Int   @id @default(1)
   taxRate Float @default(0.13)
 }
 
 model Category {
-  id    Int        @id @default(autoincrement())
-  name  String     @unique
-  items MenuItem[]
+  id        Int        @id @default(autoincrement())
+  name      String     @unique
+  isKitchen Boolean    @default(false)
+  items     MenuItem[]
 }
 
 model MenuItem {
@@ -77,6 +85,23 @@ model Visit {
   checkInAt  DateTime  @default(now())
   checkOutAt DateTime?
   bill       Bill?
+  orders     Order[]
+}
+
+model Order {
+  id        Int         @id @default(autoincrement())
+  visitId   Int
+  visit     Visit       @relation(fields: [visitId], references: [id])
+  status    OrderStatus @default(QUEUED)
+  createdAt DateTime    @default(now())
+  items     OrderItem[]
+}
+
+model OrderItem {
+  id      Int    @id @default(autoincrement())
+  orderId Int
+  order   Order  @relation(fields: [orderId], references: [id])
+  name    String
 }
 
 model Bill {

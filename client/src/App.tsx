@@ -16,12 +16,13 @@ type Customer = {
 type Locker = { id: number; number: string; gender: string; status: string };
 
 type MenuItem = { id: number; categoryId: number; name: string; price: number; description: string | null };
-type Category = { id: number; name: string; items: MenuItem[] };
+type Category = { id: number; name: string; isKitchen: boolean; items: MenuItem[] };
 
 type BillLineItem = { id: number; description: string; amount: number };
 type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 
-type Visit = { id: number; customer: Customer; locker: Locker; bill: Bill };
+type Order = { id: number; status: string; items: { id: number; name: string }[] };
+type Visit = { id: number; customer: Customer; locker: Locker; bill: Bill; orders: Order[] };
 
 function billTotal(bill: Bill) {
   const subtotal = bill.lineItems.reduce((sum, item) => sum + item.amount, 0);
@@ -137,7 +138,34 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
       </ul>
       <div>Subtotal ${subtotal.toFixed(2)} + tax ${tax.toFixed(2)} = <strong>${total.toFixed(2)}</strong></div>
 
-      <MenuPicker categories={categories} onPick={(item) => addLineItem(item.name, item.price)} />
+      <MenuPicker
+        categories={categories}
+        onPick={async (item) => {
+          const category = categories.find((c) => c.id === item.categoryId);
+          if (category?.isKitchen) {
+            await fetch(`${API}/visits/${visit.id}/order-item`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: item.name, amount: item.price }),
+            });
+          } else {
+            await addLineItem(item.name, item.price);
+          }
+        }}
+      />
+
+      {visit.orders.filter((o) => o.status !== "COMPLETE").length > 0 && (
+        <div style={{ marginTop: 8, padding: 8, background: "#f4f4f4", borderRadius: 6 }}>
+          <strong>Kitchen orders</strong>
+          <ul style={{ margin: 4 }}>
+            {visit.orders.filter((o) => o.status !== "COMPLETE").map((o) => (
+              <li key={o.id}>
+                {o.items.map((i) => i.name).join(", ")} — <em>{o.status.replace("_", " ").toLowerCase()}</em>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <form onSubmit={addCustomCharge} style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <input placeholder="Custom charge" value={description} onChange={(e) => setDescription(e.target.value)} />
@@ -208,6 +236,7 @@ function CustomerRow({ customer, lockers, isCheckedIn, onCheckedIn }: {
 
 function MenuEditor({ categories, taxRate, onClose }: { categories: Category[]; taxRate: number; onClose: () => void }) {
   const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryKitchen, setNewCategoryKitchen] = useState(false);
   const [taxPercent, setTaxPercent] = useState(String((taxRate * 100).toFixed(2)));
   const [itemCategoryId, setItemCategoryId] = useState("");
   const [itemName, setItemName] = useState("");
@@ -227,18 +256,26 @@ function MenuEditor({ categories, taxRate, onClose }: { categories: Category[]; 
     await showError(await fetch(`${API}/categories`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newCategoryName }),
+      body: JSON.stringify({ name: newCategoryName, isKitchen: newCategoryKitchen }),
     }));
     setNewCategoryName("");
   };
 
-  const renameCategory = async (id: number, current: string) => {
-    const name = prompt("New category name:", current);
-    if (!name || name === current) return;
-    await showError(await fetch(`${API}/categories/${id}`, {
+const renameCategory = async (c: Category) => {
+    const name = prompt("New category name:", c.name);
+    if (!name || name === c.name) return;
+    await showError(await fetch(`${API}/categories/${c.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, isKitchen: c.isKitchen }),
+    }));
+  };
+
+  const toggleKitchen = async (c: Category) => {
+    await showError(await fetch(`${API}/categories/${c.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: c.name, isKitchen: !c.isKitchen }),
     }));
   };
 
@@ -313,15 +350,19 @@ function MenuEditor({ categories, taxRate, onClose }: { categories: Category[]; 
       </div>
 
       <h3>Categories</h3>
-      <form onSubmit={addCategory} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+      <form onSubmit={addCategory} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
         <input placeholder="New category name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
+        <label>
+          <input type="checkbox" checked={newCategoryKitchen} onChange={(e) => setNewCategoryKitchen(e.target.checked)} /> kitchen
+        </label>
         <button type="submit">Add category</button>
       </form>
       <ul style={{ listStyle: "none", padding: 0 }}>
         {categories.map((c) => (
           <li key={c.id} style={{ padding: 6, borderBottom: "1px solid #eee" }}>
-            <strong>{c.name}</strong> ({c.items.length} items){" "}
-            <button onClick={() => renameCategory(c.id, c.name)}>Rename</button>{" "}
+            <strong>{c.name}</strong> ({c.items.length} items){c.isKitchen ? " · kitchen" : ""}{" "}
+            <button onClick={() => toggleKitchen(c)}>{c.isKitchen ? "Unset kitchen" : "Set kitchen"}</button>{" "}
+            <button onClick={() => renameCategory(c)}>Rename</button>
             <button onClick={() => deleteCategory(c.id)}>Delete</button>
             <ul>
               {c.items.map((item) => (
@@ -401,10 +442,12 @@ function App() {
       setActiveVisits((prev) => prev.filter((v) => v.id !== visit.id));
     });
     socket.on("bill:line-item-added", () => loadActiveVisits());
+    socket.on("orders:changed", () => loadActiveVisits());
     socket.on("menu:updated", () => loadMenu());
     socket.on("settings:updated", (s: { taxRate: number }) => setTaxRate(s.taxRate));
 
     return () => {
+      socket.off("orders:changed");
       socket.off("customer:created");
       socket.off("locker:updated");
       socket.off("visit:checked-in");
@@ -450,9 +493,12 @@ function App() {
     <div style={{ padding: 40, fontFamily: "sans-serif", maxWidth: 760 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1>Sauna POS</h1>
-        <button onClick={() => setShowMenuEditor((v) => !v)}>
-          {showMenuEditor ? "Close menu editor" : "Edit menu"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a href="/kitchen" target="_blank">Kitchen screen</a>
+          <button onClick={() => setShowMenuEditor((v) => !v)}>
+            {showMenuEditor ? "Close menu editor" : "Edit menu"}
+          </button>
+        </div>
       </div>
 
       {showMenuEditor && (
