@@ -25,6 +25,26 @@ enum PaymentMethod {
   VISIT_PASS
 }
 
+model Settings {
+  id      Int   @id @default(1)
+  taxRate Float @default(0.13)
+}
+
+model Category {
+  id    Int        @id @default(autoincrement())
+  name  String     @unique
+  items MenuItem[]
+}
+
+model MenuItem {
+  id          Int      @id @default(autoincrement())
+  categoryId  Int
+  category    Category @relation(fields: [categoryId], references: [id])
+  name        String
+  price       Float
+  description String?
+}
+
 model Customer {
   id          Int       @id @default(autoincrement())
   firstName   String
@@ -64,7 +84,7 @@ model Bill {
   visitId       Int             @unique
   visit         Visit           @relation(fields: [visitId], references: [id])
   lineItems     BillLineItem[]
-  taxRate       Float           @default(0.08)
+  taxRate       Float           @default(0.13)
   paymentMethod PaymentMethod?
   paidAt        DateTime?
   createdAt     DateTime        @default(now())

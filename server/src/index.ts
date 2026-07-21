@@ -16,6 +16,104 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
+// ---- Settings ----
+
+async function getSettings() {
+  return prisma.settings.upsert({
+    where: { id: 1 },
+    update: {},
+    create: { id: 1, taxRate: 0.13 },
+  });
+}
+
+app.get("/settings", async (_req, res) => {
+  res.json(await getSettings());
+});
+
+app.put("/settings", async (req, res) => {
+  const { taxRate } = req.body;
+  if (typeof taxRate !== "number" || taxRate < 0 || taxRate > 1) {
+    return res.status(400).json({ error: "taxRate must be a number between 0 and 1 (e.g. 0.13 for 13%)" });
+  }
+  const settings = await prisma.settings.upsert({
+    where: { id: 1 },
+    update: { taxRate },
+    create: { id: 1, taxRate },
+  });
+  io.emit("settings:updated", settings);
+  res.json(settings);
+});
+
+// ---- Menu ----
+
+app.get("/categories", async (_req, res) => {
+  const categories = await prisma.category.findMany({
+    include: { items: { orderBy: { name: "asc" } } },
+    orderBy: { name: "asc" },
+  });
+  res.json(categories);
+});
+
+app.post("/categories", async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "name is required" });
+  try {
+    const category = await prisma.category.create({ data: { name } });
+    io.emit("menu:updated", {});
+    res.status(201).json(category);
+  } catch {
+    res.status(409).json({ error: `A category named "${name}" already exists` });
+  }
+});
+
+app.put("/categories/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: "name is required" });
+  const category = await prisma.category.update({ where: { id }, data: { name } });
+  io.emit("menu:updated", {});
+  res.json(category);
+});
+
+app.delete("/categories/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const itemCount = await prisma.menuItem.count({ where: { categoryId: id } });
+  if (itemCount > 0) {
+    return res.status(409).json({ error: "Move or delete this category's items first" });
+  }
+  await prisma.category.delete({ where: { id } });
+  io.emit("menu:updated", {});
+  res.json({ ok: true });
+});
+
+app.post("/menu-items", async (req, res) => {
+  const { categoryId, name, price, description } = req.body;
+  if (!categoryId || !name || typeof price !== "number") {
+    return res.status(400).json({ error: "categoryId, name, and price are required" });
+  }
+  const item = await prisma.menuItem.create({ data: { categoryId, name, price, description } });
+  io.emit("menu:updated", {});
+  res.status(201).json(item);
+});
+
+app.put("/menu-items/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const { categoryId, name, price, description } = req.body;
+  const item = await prisma.menuItem.update({
+    where: { id },
+    data: { categoryId, name, price, description },
+  });
+  io.emit("menu:updated", {});
+  res.json(item);
+});
+
+app.delete("/menu-items/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  await prisma.menuItem.delete({ where: { id } });
+  io.emit("menu:updated", {});
+  res.json({ ok: true });
+});
+
 // ---- Customers ----
 
 app.get("/customers", async (_req, res) => {
@@ -89,7 +187,8 @@ app.post("/check-in", async (req, res) => {
     prisma.visit.create({ data: { customerId: customer.id, lockerId: locker.id } }),
   ]);
 
-  const bill = await prisma.bill.create({ data: { visitId: newVisit.id } });
+  const settings = await getSettings();
+  const bill = await prisma.bill.create({ data: { visitId: newVisit.id, taxRate: settings.taxRate } });
   const visit = { ...newVisit, customer, locker: updatedLocker, bill: { ...bill, lineItems: [] } };
 
   io.emit("locker:updated", updatedLocker);
@@ -97,7 +196,6 @@ app.post("/check-in", async (req, res) => {
   res.status(201).json(visit);
 });
 
-// Add a charge to an open bill — a drink, a treatment, a towel rental
 app.post("/visits/:visitId/change-locker", async (req, res) => {
   const visitId = Number(req.params.visitId);
   const { lockerId } = req.body;
@@ -128,6 +226,39 @@ app.post("/visits/:visitId/change-locker", async (req, res) => {
   io.emit("locker:updated", claimedLocker);
   io.emit("visit:locker-changed", updatedVisit);
   res.json(updatedVisit);
+});
+
+app.post("/bills/:billId/line-items", async (req, res) => {
+  const billId = Number(req.params.billId);
+  const { description, amount } = req.body;
+  if (!description || typeof amount !== "number") {
+    return res.status(400).json({ error: "description and amount are required" });
+  }
+  const lineItem = await prisma.billLineItem.create({ data: { billId, description, amount } });
+  io.emit("bill:line-item-added", { billId, lineItem });
+  res.status(201).json(lineItem);
+});
+
+app.post("/check-out", async (req, res) => {
+  const { visitId, paymentMethod } = req.body;
+  if (!paymentMethod) {
+    return res.status(400).json({ error: "paymentMethod is required to check out" });
+  }
+  const visit = await prisma.visit.findUnique({ where: { id: visitId } });
+  if (!visit || visit.checkOutAt) {
+    return res.status(404).json({ error: "Active visit not found" });
+  }
+
+  const [updatedVisit, updatedLocker, updatedBill] = await prisma.$transaction([
+    prisma.visit.update({ where: { id: visitId }, data: { checkOutAt: new Date() } }),
+    prisma.locker.update({ where: { id: visit.lockerId }, data: { status: "AVAILABLE" } }),
+    prisma.bill.update({ where: { visitId }, data: { paymentMethod, paidAt: new Date() } }),
+  ]);
+
+  io.emit("visit:checked-out", updatedVisit);
+  io.emit("locker:updated", updatedLocker);
+  io.emit("bill:paid", updatedBill);
+  res.json({ visit: updatedVisit, bill: updatedBill });
 });
 
 io.on("connection", (socket) => {
