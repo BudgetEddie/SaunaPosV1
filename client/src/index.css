@@ -114,7 +114,12 @@ code {
 .lg-page {
   font-family: 'Hanken Grotesk', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
 }
+
 @keyframes rise {
   0%   { opacity: 0;   transform: translateY(6px) scaleY(.9); }
   22%  { opacity: .28; }
