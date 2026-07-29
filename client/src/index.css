@@ -132,3 +132,9 @@ code {
 .lg-btn:active { transform: translateY(1px); }
 .lg-chip:hover { border-color: #b5563a !important; color: #f4efe7 !important; }
 .lg-page :focus-visible { outline: 2px solid #c8b9a0; outline-offset: 3px; }
+
+/* ---- Receipt printing ---- */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff !important; }
+}

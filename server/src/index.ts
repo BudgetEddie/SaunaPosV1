@@ -463,6 +463,89 @@ app.post("/visits/:visitId/purchase-pass", async (req, res) => {
   res.status(201).json({ ok: true, visitPassBalance: updatedCustomer.visitPassBalance });
 });
 
+// ---- Reports & receipts ----
+
+app.get("/reports/daily", async (req, res) => {
+  // Expect ?date=YYYY-MM-DD; default to today. Parsed by hand into local
+  // year/month/day — new Date("2026-07-29") would read it as UTC midnight,
+  // which shifts the day boundary by your timezone offset.
+  const dateStr = String(req.query.date ?? "");
+  let y: number, m: number, d: number;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    [y, m, d] = dateStr.split("-").map(Number);
+  } else {
+    const now = new Date();
+    y = now.getFullYear();
+    m = now.getMonth() + 1;
+    d = now.getDate();
+  }
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 1); // JS rolls month/year over automatically
+
+  const paidBills = await prisma.bill.findMany({
+    where: { paidAt: { gte: start, lt: end } },
+    include: {
+      lineItems: true,
+      visit: { include: { customer: true, locker: true } },
+    },
+    orderBy: { paidAt: "desc" },
+  });
+
+  const byMethod: Record<string, number> = {};
+  let subtotalAll = 0;
+  let taxAll = 0;
+  let totalAll = 0;
+  let passesRedeemed = 0;
+
+  const bills = paidBills.map((b) => {
+    const subtotal = b.lineItems.reduce((sum, li) => sum + li.amount, 0);
+    const tax = subtotal * b.taxRate;
+    const total = subtotal + tax;
+    const method = b.paymentMethod ?? "UNKNOWN";
+    byMethod[method] = (byMethod[method] ?? 0) + total;
+    subtotalAll += subtotal;
+    taxAll += tax;
+    totalAll += total;
+    if (b.visit.redeemsPass) passesRedeemed++;
+    return {
+      id: b.id,
+      paidAt: b.paidAt,
+      paymentMethod: method,
+      subtotal,
+      tax,
+      total,
+      customer: `${b.visit.customer.firstName} ${b.visit.customer.lastName}`,
+      locker: b.visit.locker.number,
+      redeemsPass: b.visit.redeemsPass,
+    };
+  });
+
+  res.json({
+    date: `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+    billCount: bills.length,
+    passesRedeemed,
+    subtotal: subtotalAll,
+    tax: taxAll,
+    total: totalAll,
+    byMethod,
+    bills,
+  });
+});
+
+// One bill with everything a receipt needs
+app.get("/bills/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const bill = await prisma.bill.findUnique({
+    where: { id },
+    include: {
+      lineItems: { orderBy: { createdAt: "asc" } },
+      visit: { include: { customer: true, locker: true } },
+    },
+  });
+  if (!bill) return res.status(404).json({ error: "Bill not found" });
+  res.json(bill);
+});
+
 // ---- Kitchen ----
 
 app.get("/orders/open", async (_req, res) => {

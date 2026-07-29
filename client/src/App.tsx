@@ -650,6 +650,7 @@ function App() {
             {user.displayName} · {user.role === "ADMIN" ? "admin" : "staff"}
           </span>
           <a href="/kitchen" target="_blank">Kitchen screen</a>
+          <a href="/reports" target="_blank">Reports</a>
           {user.role === "ADMIN" && (
             <button onClick={() => setShowMenuEditor((v) => !v)}>
               {showMenuEditor ? "Close menu editor" : "Edit menu"}
