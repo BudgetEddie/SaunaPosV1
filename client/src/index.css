@@ -259,3 +259,22 @@ body {
 .pos-tile:hover {
   border-color: #7a6a53;
 }
+
+/* ---- Checkout ---- */
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+@keyframes popIn {
+  0% { opacity: 0; transform: scale(.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes toastIn {
+  0% { opacity: 0; transform: translate(-50%, 10px); }
+  100% { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes freshRow {
+  0% { background: #eef4ea; }
+  100% { background: transparent; }
+}

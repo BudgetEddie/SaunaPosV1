@@ -1,42 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
-import { groupItems } from "./groupItems.ts";
 import { authFetch } from "./authFetch.ts";
+import Checkout from "./Checkout.tsx";
+import { type Category, type Locker, type MenuItem, type Visit } from "./types.ts";
 
 const socket = io("http://localhost:4000");
-
-type Customer = {
-  id: number;
-  firstName: string;
-  lastName: string;
-  gender: string;
-  notes: string | null;
-  visitPassBalance: number;
-};
-type Locker = { id: number; number: string; gender: string; status: string };
-type MenuItem = {
-  id: number;
-  categoryId: number;
-  name: string;
-  price: number;
-  description: string | null;
-  visitCredits: number;
-  redeemsPass: boolean;
-};
-type Category = { id: number; name: string; isKitchen: boolean; isAdmission: boolean; items: MenuItem[] };
-type BillLineItem = { id: number; description: string; amount: number; isAdmission: boolean };
-type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
-type Order = { id: number; status: string; items: { id: number; name: string; canceled: boolean }[] };
-type Visit = {
-  id: number;
-  checkInAt: string;
-  customer: Customer;
-  locker: Locker;
-  bill: Bill;
-  orders: Order[];
-  redeemsPass: boolean;
-};
 
 // One line in the cart. `qty` is what the − / + buttons change; when the order
 // is confirmed the line is expanded back into `qty` separate charges, which is
@@ -89,9 +58,9 @@ function fmtDuration(iso: string) {
   const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
   return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
 }
-function billTotal(bill: Bill) {
-  const subtotal = bill.lineItems.reduce((sum, item) => sum + item.amount, 0);
-  const tax = subtotal * bill.taxRate;
+function billTotal(visit: Visit) {
+  const subtotal = visit.bill.lineItems.reduce((sum, item) => sum + item.amount, 0);
+  const tax = subtotal * visit.bill.taxRate;
   return { subtotal, tax, total: subtotal + tax };
 }
 // Anything the kitchen still owes this guest: orders that aren't COMPLETE, not
@@ -100,7 +69,7 @@ function openKitchen(visit: Visit) {
   const orders = visit.orders.filter((o) => o.status !== "COMPLETE");
   const count = orders.reduce((n, o) => n + o.items.filter((i) => !i.canceled).length, 0);
   const ready = orders.some((o) => o.status === "READY" && o.items.some((i) => !i.canceled));
-  return { orders, count, ready };
+  return { count, ready };
 }
 function chipsFor(visit: Visit) {
   const chips: { key: string; label: string; ink: string; bg: string }[] = [];
@@ -137,6 +106,7 @@ function PointOfSale() {
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedVisitId, setSelectedVisitId] = useState<number | null>(null);
+  const [checkoutVisit, setCheckoutVisit] = useState<Visit | null>(null);
   const [autoOpened, setAutoOpened] = useState(false);
   const [cart, setCart] = useState<Cart>({});
   const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
@@ -144,16 +114,12 @@ function PointOfSale() {
   const [customOpen, setCustomOpen] = useState(false);
   const [customName, setCustomName] = useState("");
   const [customAmount, setCustomAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [newLockerId, setNewLockerId] = useState("");
   const [, setTick] = useState(0);
 
   const [searchParams] = useSearchParams();
   const lockerParam = searchParams.get("locker") ?? "";
   const [query, setQuery] = useState(lockerParam);
-
-  const user = JSON.parse(localStorage.getItem("user") ?? "null");
-  const isAdmin = user?.role === "ADMIN";
 
   const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
@@ -204,6 +170,11 @@ function PointOfSale() {
   // every socket update repaints them, and a checkout elsewhere drops us back
   // to the grid automatically.
   const selected = visits.find((v) => v.id === selectedVisitId) ?? null;
+  // The checkout screen is the exception: once payment goes through the visit
+  // stops being active, so we fall back to the copy we were holding.
+  const liveCheckoutVisit = checkoutVisit
+    ? (visits.find((v) => v.id === checkoutVisit.id) ?? checkoutVisit)
+    : null;
 
   const showError = async (res: Response) => {
     if (!res.ok) {
@@ -292,12 +263,6 @@ function PointOfSale() {
     loadVisits();
   };
 
-  const removeLineItem = async (bill: Bill, item: BillLineItem) => {
-    if (!confirm(`Remove "${item.description}" (${money(item.amount)}) from this tab?`)) return;
-    await showError(await authFetch(`/bills/${bill.id}/line-items/${item.id}`, { method: "DELETE" }));
-    loadVisits();
-  };
-
   const changeLocker = async () => {
     if (!selected || !newLockerId) return;
     await showError(await authFetch(`/visits/${selected.id}/change-locker`, {
@@ -308,20 +273,13 @@ function PointOfSale() {
     setNewLockerId("");
   };
 
-  const checkOut = async () => {
+  const goToCheckout = () => {
     if (!selected) return;
     if (cartLines.length > 0) {
       alert("There's an unconfirmed order on screen — add it to the tab or clear it first.");
       return;
     }
-    const ok = await showError(await authFetch(`/check-out`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ visitId: selected.id, paymentMethod }),
-    }));
-    if (!ok) return;
-    setSelectedVisitId(null);
-    loadVisits();
+    setCheckoutVisit(selected);
   };
 
   const cartLines = Object.values(cart);
@@ -337,6 +295,23 @@ function PointOfSale() {
     : visits;
 
   const now = new Date();
+
+  // Checkout takes over the whole page — still inside the Point of Sale tab,
+  // so the sidebar highlight doesn't move.
+  if (liveCheckoutVisit) {
+    return (
+      <Checkout
+        visit={liveCheckoutVisit}
+        onBack={() => setCheckoutVisit(null)}
+        onDone={() => {
+          setCheckoutVisit(null);
+          setSelectedVisitId(null);
+          loadVisits();
+          loadLockers();
+        }}
+      />
+    );
+  }
 
   const header = (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 26px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
@@ -375,7 +350,7 @@ function PointOfSale() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
         {filtered.map((v) => {
-          const { total } = billTotal(v.bill);
+          const { total } = billTotal(v);
           return (
             <div
               key={v.id}
@@ -429,9 +404,8 @@ function PointOfSale() {
 
   const orderView = !selected ? null : (() => {
     const visit = selected;
-    const tab = billTotal(visit.bill);
+    const tab = billTotal(visit);
     const currentAdmission = visit.bill.lineItems.find((li) => li.isAdmission) ?? null;
-    const kitchen = openKitchen(visit);
     const shownCategories = activeCategoryId === null
       ? categories
       : categories.filter((c) => c.id === activeCategoryId);
@@ -449,7 +423,7 @@ function PointOfSale() {
         </div>
 
         {/* guest strip */}
-        <div style={{ ...PANEL, display: "flex", alignItems: "center", gap: 14, padding: "16px 20px" }}>
+        <div style={{ ...PANEL, display: "flex", alignItems: "center", gap: 14, padding: "16px 20px", flexWrap: "wrap" }}>
           <div style={{ width: 48, height: 48, flex: "none", borderRadius: "50%", background: "#efe7d9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 800, color: "#7a6a53" }}>
             {initials(visit.customer.firstName, visit.customer.lastName)}
           </div>
@@ -465,9 +439,19 @@ function PointOfSale() {
             <div style={{ fontSize: 12.5, fontWeight: 600, color: "#a89a86", marginTop: 2 }}>
               Locker {visit.locker.number} · in since {sinceLabel(visit.checkInAt)} · {fmtDuration(visit.checkInAt)}
               {visit.redeemsPass ? " · on a pass" : ""}
+              {visit.customer.visitPassBalance > 0 ? ` · ${visit.customer.visitPassBalance} passes left` : ""}
             </div>
           </div>
-          <div style={{ flex: "none", textAlign: "right" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+            <select className="cd-in" value={newLockerId} onChange={(e) => setNewLockerId(e.target.value)} style={{ width: 150 }}>
+              <option value="">Move locker…</option>
+              {availableLockers.map((l) => (
+                <option key={l.id} value={l.id}>{l.number}</option>
+              ))}
+            </select>
+            <button onClick={changeLocker} style={BTN_GHOST}>Move</button>
+          </div>
+          <div style={{ flex: "none", textAlign: "right", minWidth: 110 }}>
             <div style={MICRO}>Open tab</div>
             <div style={{ fontSize: 22, fontWeight: 800 }}>{money(tab.total)}</div>
           </div>
@@ -543,7 +527,7 @@ function PointOfSale() {
           {/* cart */}
           <div style={{ ...PANEL, overflow: "hidden", position: "sticky", top: 20 }}>
             <div style={{ padding: "15px 18px", borderBottom: "1px solid rgba(43,38,32,.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ ...LABEL, letterSpacing: 1.4 }}>This order</div>
+              <div style={LABEL}>This order</div>
               {cartLines.length > 0 && (
                 <div onClick={() => setCart({})} style={{ fontSize: 11.5, fontWeight: 700, color: "#a89a86", cursor: "pointer" }}>
                   Clear
@@ -628,86 +612,13 @@ function PointOfSale() {
                 </div>
               )}
 
-              <a
-                href="#tab-checkout"
-                style={{ textAlign: "center", padding: 12, border: "1.5px solid #d8cebc", borderRadius: 12, color: "#5f5340", fontSize: 13.5, fontWeight: 700, textDecoration: "none" }}
+              <button
+                onClick={goToCheckout}
+                style={{ textAlign: "center", padding: 12, border: "1.5px solid #d8cebc", borderRadius: 12, background: "#fffdf9", color: "#5f5340", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
               >
-                Go to checkout ↓
-              </a>
+                Go to checkout →
+              </button>
             </div>
-          </div>
-        </div>
-
-        {/* ---- interim tab & checkout panel ---- */}
-        <div id="tab-checkout" style={{ ...PANEL, padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ ...LABEL, letterSpacing: 1.4 }}>Tab &amp; checkout</div>
-
-          <div>
-            {visit.bill.lineItems.map((item) => (
-              <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
-                <div style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>
-                  {item.description}
-                  {item.isAdmission && <span style={{ color: "#a89a86", fontWeight: 600 }}> · admission</span>}
-                </div>
-                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{money(item.amount)}</div>
-                {isAdmin && !item.isAdmission && (
-                  <button onClick={() => removeLineItem(visit.bill, item)} style={{ ...BTN_GHOST, padding: "4px 10px", fontSize: 12 }}>
-                    Remove
-                  </button>
-                )}
-              </div>
-            ))}
-            {visit.bill.lineItems.length === 0 && (
-              <div style={{ fontSize: 13.5, color: "#a89a86", fontWeight: 600 }}>Nothing on this tab yet.</div>
-            )}
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 18, fontSize: 13.5, fontWeight: 600, color: "#6b6152" }}>
-            <span>Subtotal {money(tab.subtotal)}</span>
-            <span>Tax {money(tab.tax)}</span>
-            <span style={{ fontSize: 16, fontWeight: 800, color: "#2b2620" }}>Total {money(tab.total)}</span>
-          </div>
-
-          {kitchen.count > 0 && (
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
-              <span style={LABEL}>Kitchen</span>{" "}
-              {kitchen.orders.map((o) => (
-                <span key={o.id} style={{ marginRight: 12 }}>
-                  {groupItems(o.items.filter((i) => !i.canceled)).map((g) => `${g.name} x${g.count}`).join(", ")}
-                  {" — "}
-                  <em>{o.status.replace("_", " ").toLowerCase()}</em>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
-            {visit.customer.visitPassBalance} pass{visit.customer.visitPassBalance === 1 ? "" : "es"} left
-            {visit.redeemsPass && <strong style={{ color: "#3f5540" }}> · this visit is on a pass</strong>}
-          </div>
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", paddingTop: 4 }}>
-            <select className="cd-in" value={newLockerId} onChange={(e) => setNewLockerId(e.target.value)} style={{ width: 170 }}>
-              <option value="">Move to locker…</option>
-              {availableLockers.map((l) => (
-                <option key={l.id} value={l.id}>{l.number}</option>
-              ))}
-            </select>
-            <button onClick={changeLocker} style={BTN_GHOST}>Change locker</button>
-
-            <div style={{ flex: 1 }} />
-
-            <select className="cd-in" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} style={{ width: 150 }}>
-              <option value="CASH">Cash</option>
-              <option value="CARD">Card</option>
-              <option value="GIFT_CARD">Gift card</option>
-            </select>
-            <button
-              onClick={checkOut}
-              style={{ padding: "12px 22px", border: "none", borderRadius: 12, background: "#7a6a53", color: "#fff", fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: "pointer" }}
-            >
-              Check out &amp; pay {money(tab.total)}
-            </button>
           </div>
         </div>
       </div>
