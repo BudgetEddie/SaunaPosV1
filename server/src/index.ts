@@ -206,20 +206,98 @@ app.delete("/menu-items/:id", requireAdmin, async (req, res) => {
 // ---- Customers ----
 
 app.get("/customers", async (_req, res) => {
-  const customers = await prisma.customer.findMany({ orderBy: { createdAt: "desc" } });
+  const customers = await prisma.customer.findMany({
+    orderBy: { createdAt: "desc" },
+    include: {
+      // Just the newest visit — enough for the "Last visit" column, and if its
+      // checkOutAt is still null we know they're in the building right now.
+      visits: {
+        orderBy: { checkInAt: "desc" },
+        take: 1,
+        select: { id: true, checkInAt: true, checkOutAt: true },
+      },
+    },
+  });
   res.json(customers);
 });
 
+app.get("/customers/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const customer = await prisma.customer.findUnique({
+    where: { id },
+    include: {
+      visits: {
+        orderBy: { checkInAt: "desc" },
+        include: {
+          locker: true,
+          bill: { include: { lineItems: true } },
+        },
+      },
+    },
+  });
+  if (!customer) return res.status(404).json({ error: "Customer not found" });
+  res.json(customer);
+});
+
 app.post("/customers", async (req, res) => {
-  const { firstName, lastName, gender, phone, email, notes } = req.body;
+  const { firstName, lastName, gender, phone, email, dateOfBirth, address, notes } = req.body;
   if (!firstName || !lastName || !gender) {
-    return res.status(400).json({ error: "firstName, lastName, and gender are required" });
+    return res.status(400).json({ error: "First name, last name, and gender are required" });
   }
   const customer = await prisma.customer.create({
-    data: { firstName, lastName, gender, phone, email, notes },
+    data: {
+      firstName,
+      lastName,
+      gender,
+      phone: phone || null,
+      email: email || null,
+      address: address || null,
+      notes: notes || null,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+    },
   });
   io.emit("customer:created", customer);
   res.status(201).json(customer);
+});
+
+app.put("/customers/:id", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const { firstName, lastName, gender, phone, email, dateOfBirth, address, notes } = req.body;
+  if (!firstName || !lastName || !gender) {
+    return res.status(400).json({ error: "First name, last name, and gender are required" });
+  }
+
+  const existing = await prisma.customer.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: "Customer not found" });
+
+  // Lockers are split into a men's pool and a women's pool, so flipping gender
+  // mid-visit would leave this guest holding a locker from the wrong one.
+  if (gender !== existing.gender) {
+    const activeVisit = await prisma.visit.findFirst({
+      where: { customerId: id, checkOutAt: null },
+    });
+    if (activeVisit) {
+      return res.status(400).json({
+        error: "Check this guest out before changing their gender — their locker belongs to the other pool",
+      });
+    }
+  }
+
+  const customer = await prisma.customer.update({
+    where: { id },
+    data: {
+      firstName,
+      lastName,
+      gender,
+      phone: phone || null,
+      email: email || null,
+      address: address || null,
+      notes: notes || null,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+    },
+  });
+  io.emit("customer:updated", customer);
+  res.json(customer);
 });
 
 // ---- Lockers ----

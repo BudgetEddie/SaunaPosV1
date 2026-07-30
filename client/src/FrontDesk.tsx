@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { groupItems } from "./groupItems.ts";
 import { authFetch } from "./authFetch.ts";
@@ -352,7 +353,8 @@ function FrontDesk() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [search, setSearch] = useState("");
-  const [lockerSearch, setLockerSearch] = useState("");
+  const [searchParams] = useSearchParams();
+  const [lockerSearch, setLockerSearch] = useState(searchParams.get("locker") ?? "");
 
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";

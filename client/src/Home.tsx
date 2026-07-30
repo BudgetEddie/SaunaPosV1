@@ -236,7 +236,7 @@ function Home() {
         {/* Right column */}
         <div style={{ flex: 1, minWidth: 240, display: "flex", flexDirection: "column", gap: 16 }}>
           <Link
-            to="/frontdesk"
+            to="/customers"
             style={{ display: "block", textAlign: "center", background: "#fff", border: "1.5px solid #d8cfbd", borderRadius: 12, padding: "13px 0", textDecoration: "none", color: "#2b2620", fontWeight: 700, fontSize: 14 }}
           >
             New Customer

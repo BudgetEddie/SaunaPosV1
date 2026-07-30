@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import "./index.css";
 import Shell from "./Shell.tsx";
 import Home from "./Home.tsx";
+import CustomerDirectory from "./CustomerDirectory.tsx";
 import FrontDesk from "./FrontDesk.tsx";
 import Kitchen from "./Kitchen.tsx";
 import Reports from "./Reports.tsx";
@@ -17,6 +18,7 @@ createRoot(document.getElementById("root")!).render(
         <Route path="/receipt/:billId" element={<Receipt />} />
         <Route element={<Shell />}>
           <Route path="/" element={<Home />} />
+          <Route path="/customers" element={<CustomerDirectory />} />
           <Route path="/frontdesk" element={<FrontDesk />} />
           <Route path="/kitchen" element={<Kitchen />} />
           <Route path="/reports" element={<Reports />} />

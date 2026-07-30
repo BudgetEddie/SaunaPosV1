@@ -175,3 +175,58 @@ body {
   background: rgba(244, 239, 231, 0.1);
   border-left-color: #b5563a;
 }
+
+/* ---- Customer directory ---- */
+
+.cd-in {
+  width: 100%;
+  border: 1.5px solid #d8cebc;
+  outline: none;
+  background: #fffdf9;
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2b2620;
+}
+.cd-in:focus {
+  border-color: #7a6a53;
+}
+
+.cd-ta {
+  width: 100%;
+  border: 1.5px solid #d8cebc;
+  outline: none;
+  background: #fffdf9;
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2b2620;
+  resize: vertical;
+  min-height: 64px;
+}
+.cd-ta:focus {
+  border-color: #7a6a53;
+}
+
+.cd-search {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2b2620;
+}
+.cd-search::placeholder {
+  color: #b8ab97;
+  font-weight: 600;
+}
+
+.cd-row:hover {
+  background: #f7f3ea;
+}
