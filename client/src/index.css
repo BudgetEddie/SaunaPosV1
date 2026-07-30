@@ -230,3 +230,32 @@ body {
 .cd-row:hover {
   background: #f7f3ea;
 }
+
+/* ---- Point of sale ---- */
+
+.pos-search {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2b2620;
+}
+.pos-search::placeholder {
+  color: #b8ab97;
+  font-weight: 600;
+}
+
+.pos-card {
+  transition: border-color .12s, transform .12s;
+}
+.pos-card:hover {
+  border-color: #7a6a53;
+  transform: translateY(-1px);
+}
+
+.pos-tile:hover {
+  border-color: #7a6a53;
+}

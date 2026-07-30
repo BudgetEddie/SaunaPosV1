@@ -37,7 +37,7 @@ function Shell() {
         <nav style={{ display: "flex", flexDirection: "column", flex: 1 }}>
           <NavLink to="/" end className="side-link">Home</NavLink>
           <NavLink to="/customers" className="side-link">Customer Directory</NavLink>
-          <NavLink to="/frontdesk" className="side-link">Front desk</NavLink>
+          <NavLink to="/pos" className="side-link">Point of Sale</NavLink>
           <NavLink to="/kitchen" className="side-link">Kitchen</NavLink>
           <NavLink to="/reports" className="side-link">Reports</NavLink>
           <div style={{ flex: 1 }} />

@@ -160,7 +160,7 @@ function Home() {
             </span>
           ))}
           <Link
-            to="/frontdesk"
+            to="/customers"
             style={{ background: "#4a4236", color: "#fffdf9", padding: "11px 22px", borderRadius: 10, textDecoration: "none", fontWeight: 700, fontSize: 14 }}
           >
             Check In
@@ -187,7 +187,7 @@ function Home() {
           <Card>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={CARD_LABEL}>GUESTS IN THE BATHS</div>
-              <Link to="/frontdesk" style={{ color: "#8f5340", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+              <Link to="/pos" style={{ color: "#8f5340", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
                 See all →
               </Link>
             </div>

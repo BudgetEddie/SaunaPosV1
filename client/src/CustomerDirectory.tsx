@@ -267,7 +267,7 @@ function CustomerDirectory() {
   };
 
   const openCheckout = (lockerNumber: string) => {
-    navigate(`/frontdesk?locker=${encodeURIComponent(lockerNumber)}`);
+    navigate(`/pos?locker=${encodeURIComponent(lockerNumber)}`);
   };
 
   const q = query.trim().toLowerCase();
