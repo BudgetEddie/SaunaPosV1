@@ -42,7 +42,7 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
 
 function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
   if (req.auth?.role !== "ADMIN") {
-    return res.status(403).json({ error: "Only the admin login can change the menu" });
+    return res.status(403).json({ error: "Only the admin login can do this" });
   }
   next();
 }
@@ -396,23 +396,18 @@ app.post("/visits/:visitId/change-locker", async (req, res) => {
   res.json(updatedVisit);
 });
 
-app.post("/bills/:billId/line-items", async (req, res) => {
-  const billId = Number(req.params.billId);
-  const { description, amount } = req.body;
-  if (!description || typeof amount !== "number") {
-    return res.status(400).json({ error: "description and amount are required" });
-  }
-  const lineItem = await prisma.billLineItem.create({ data: { billId, description, amount } });
-  io.emit("bill:line-item-added", { billId, lineItem });
-  res.status(201).json(lineItem);
-});
-
-// Add a kitchen item: bill it AND put it on the customer's open kitchen order, atomically
-app.post("/visits/:visitId/order-item", async (req, res) => {
+// Confirm a pending order: every item hits the bill, kitchen items join ONE
+// kitchen order, pass credits apply — all in a single transaction.
+app.post("/visits/:visitId/confirm-order", async (req, res) => {
   const visitId = Number(req.params.visitId);
-  const { name, amount } = req.body;
-  if (!name || typeof amount !== "number") {
-    return res.status(400).json({ error: "name and amount are required" });
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "No items to confirm" });
+  }
+  for (const it of items) {
+    if (!it || !it.name || typeof it.amount !== "number") {
+      return res.status(400).json({ error: "Each item needs a name and an amount" });
+    }
   }
 
   const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { bill: true } });
@@ -421,46 +416,139 @@ app.post("/visits/:visitId/order-item", async (req, res) => {
   }
   const billId = visit.bill.id;
 
-  await prisma.$transaction(async (tx) => {
-    await tx.billLineItem.create({ data: { billId, description: name, amount } });
+  const kitchenItems = items.filter((i: { isKitchen?: boolean }) => i.isKitchen);
+  const passCredits = items.reduce(
+    (sum: number, i: { visitCredits?: number }) => sum + (Number(i.visitCredits) || 0),
+    0
+  );
 
-    let order = await tx.order.findFirst({ where: { visitId, status: "QUEUED" } });
-    if (!order) {
-      order = await tx.order.create({ data: { visitId } });
+  const updatedCustomer = await prisma.$transaction(async (tx) => {
+    for (const it of items) {
+      await tx.billLineItem.create({
+        data: {
+          billId,
+          description: it.name,
+          amount: it.amount,
+          visitCreditsGranted: Number(it.visitCredits) || 0,
+        },
+      });
     }
-    await tx.orderItem.create({ data: { orderId: order.id, name } });
+
+    if (kitchenItems.length > 0) {
+      let order = await tx.order.findFirst({ where: { visitId, status: "QUEUED" } });
+      if (!order) {
+        order = await tx.order.create({ data: { visitId } });
+      }
+      for (const it of kitchenItems) {
+        await tx.orderItem.create({ data: { orderId: order.id, name: it.name } });
+      }
+    }
+
+    if (passCredits > 0) {
+      return tx.customer.update({
+        where: { id: visit.customerId },
+        data: { visitPassBalance: { increment: passCredits } },
+      });
+    }
+    return null;
   });
 
   io.emit("bill:line-item-added", { billId });
-  io.emit("orders:changed", {});
+  if (kitchenItems.length > 0) io.emit("orders:changed", {});
+  if (updatedCustomer) io.emit("customer:updated", updatedCustomer);
   res.status(201).json({ ok: true });
 });
 
-// Sell a visit pass: bill it AND credit the customer's balance, atomically
-app.post("/visits/:visitId/purchase-pass", async (req, res) => {
-  const visitId = Number(req.params.visitId);
-  const { name, amount, visitCredits } = req.body;
-  if (!name || typeof amount !== "number" || typeof visitCredits !== "number" || visitCredits <= 0) {
-    return res.status(400).json({ error: "name, amount, and a positive visitCredits are required" });
+// Remove a confirmed line item from an UNPAID bill — admin only.
+app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, res) => {
+  const billId = Number(req.params.billId);
+  const lineItemId = Number(req.params.lineItemId);
+
+  const lineItem = await prisma.billLineItem.findUnique({
+    where: { id: lineItemId },
+    include: { bill: { include: { visit: { include: { customer: true } } } } },
+  });
+  if (!lineItem || lineItem.billId !== billId) {
+    return res.status(404).json({ error: "Line item not found" });
+  }
+  if (lineItem.bill.paidAt) {
+    return res.status(400).json({ error: "This bill is already paid — use a refund instead" });
+  }
+  if (lineItem.isAdmission) {
+    return res.status(400).json({ error: "Swap the admission type instead of removing it" });
+  }
+  const customer = lineItem.bill.visit.customer;
+  if (lineItem.visitCreditsGranted > 0 && customer.visitPassBalance < lineItem.visitCreditsGranted) {
+    return res.status(409).json({
+      error: "Some of those visit passes have already been used, so this sale can't be removed cleanly",
+    });
   }
 
-  const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { bill: true } });
-  if (!visit || visit.checkOutAt || !visit.bill) {
-    return res.status(404).json({ error: "Active visit not found" });
-  }
-  const billId = visit.bill.id;
+  const visitId = lineItem.bill.visitId;
+  let removedKitchenItem = false;
 
   const updatedCustomer = await prisma.$transaction(async (tx) => {
-    await tx.billLineItem.create({ data: { billId, description: name, amount } });
-    return tx.customer.update({
-      where: { id: visit.customerId },
-      data: { visitPassBalance: { increment: visitCredits } },
+    await tx.billLineItem.delete({ where: { id: lineItemId } });
+
+    // Kitchen cleanup, matched to where the food is. Still QUEUED (nobody's
+    // started it): the item silently disappears from the card. Already
+    // IN_PROGRESS or READY: it's flagged CANCELED instead — the kitchen sees
+    // the cancellation on the card and dismisses it themselves.
+    const openKitchenOrders = await tx.order.findMany({
+      where: { visitId, status: { not: "COMPLETE" } },
+      include: { items: true },
+      orderBy: { createdAt: "asc" },
     });
+    for (const order of openKitchenOrders) {
+      const match = order.items.find((i) => i.name === lineItem.description && !i.canceled);
+      if (!match) continue;
+      if (order.status === "QUEUED") {
+        await tx.orderItem.delete({ where: { id: match.id } });
+        if (order.items.length === 1) {
+          await tx.order.delete({ where: { id: order.id } });
+        }
+      } else {
+        await tx.orderItem.update({ where: { id: match.id }, data: { canceled: true } });
+      }
+      removedKitchenItem = true;
+      break; // one bill line = one kitchen item
+    }
+
+    if (lineItem.visitCreditsGranted > 0) {
+      return tx.customer.update({
+        where: { id: customer.id },
+        data: { visitPassBalance: { decrement: lineItem.visitCreditsGranted } },
+      });
+    }
+    return null;
   });
 
-  io.emit("bill:line-item-added", { billId });
-  io.emit("customer:updated", updatedCustomer);
-  res.status(201).json({ ok: true, visitPassBalance: updatedCustomer.visitPassBalance });
+  io.emit("bill:line-item-added", { billId }); // same "this bill changed" signal the app already refreshes on
+  if (removedKitchenItem) io.emit("orders:changed", {});
+  if (updatedCustomer) io.emit("customer:updated", updatedCustomer);
+  res.json({ ok: true });
+});
+
+// Refund a PAID bill in full — admin only. Stamps it; never deletes.
+app.post("/bills/:id/refund", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const { reason } = req.body;
+
+  const bill = await prisma.bill.findUnique({ where: { id } });
+  if (!bill) return res.status(404).json({ error: "Bill not found" });
+  if (!bill.paidAt) {
+    return res.status(400).json({ error: "This bill isn't paid yet — remove line items instead" });
+  }
+  if (bill.refundedAt) {
+    return res.status(409).json({ error: "This bill was already refunded" });
+  }
+
+  const updated = await prisma.bill.update({
+    where: { id },
+    data: { refundedAt: new Date(), refundReason: reason || null },
+  });
+  io.emit("bill:refunded", updated);
+  res.json(updated);
 });
 
 // ---- Reports & receipts ----
@@ -517,8 +605,20 @@ app.get("/reports/daily", async (req, res) => {
       customer: `${b.visit.customer.firstName} ${b.visit.customer.lastName}`,
       locker: b.visit.locker.number,
       redeemsPass: b.visit.redeemsPass,
+      refunded: Boolean(b.refundedAt),
     };
   });
+
+  // Refunds are bucketed by the day they were GIVEN (refundedAt), not the day
+  // the bill was paid — yesterday's drawer count shouldn't change retroactively.
+  const refundedBills = await prisma.bill.findMany({
+    where: { refundedAt: { gte: start, lt: end } },
+    include: { lineItems: true },
+  });
+  const refundsGiven = refundedBills.reduce((sum, b) => {
+    const st = b.lineItems.reduce((s, li) => s + li.amount, 0);
+    return sum + st * (1 + b.taxRate);
+  }, 0);
 
   res.json({
     date: `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
@@ -528,6 +628,9 @@ app.get("/reports/daily", async (req, res) => {
     tax: taxAll,
     total: totalAll,
     byMethod,
+    refundCount: refundedBills.length,
+    refundsGiven,
+    net: totalAll - refundsGiven,
     bills,
   });
 });
@@ -566,6 +669,25 @@ app.post("/orders/:id/status", async (req, res) => {
   const order = await prisma.order.update({ where: { id }, data: { status } });
   io.emit("orders:changed", {});
   res.json(order);
+});
+
+// Dismiss a CANCELED item from a kitchen card (any signed-in terminal)
+app.delete("/order-items/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const item = await prisma.orderItem.findUnique({
+    where: { id },
+    include: { order: { include: { items: true } } },
+  });
+  if (!item) return res.status(404).json({ error: "Order item not found" });
+  if (!item.canceled) {
+    return res.status(400).json({ error: "Only canceled items can be dismissed from the kitchen" });
+  }
+  await prisma.orderItem.delete({ where: { id } });
+  if (item.order.items.length === 1) {
+    await prisma.order.delete({ where: { id: item.orderId } });
+  }
+  io.emit("orders:changed", {});
+  res.json({ ok: true });
 });
 
 app.post("/check-out", async (req, res) => {

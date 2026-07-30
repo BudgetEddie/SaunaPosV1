@@ -22,6 +22,8 @@ type BillData = {
   taxRate: number;
   paymentMethod: string | null;
   paidAt: string | null;
+  refundedAt: string | null;
+  refundReason: string | null;
   lineItems: { id: number; description: string; amount: number; isAdmission: boolean }[];
   visit: {
     checkInAt: string;
@@ -103,6 +105,12 @@ function Receipt() {
           <div style={{ textAlign: "center", fontWeight: 700 }}>
             PAID — {(METHOD_LABELS[bill.paymentMethod ?? ""] ?? bill.paymentMethod ?? "").toUpperCase()}
           </div>
+          {bill.refundedAt && (
+            <div style={{ textAlign: "center", fontWeight: 700 }}>
+              *** REFUNDED {new Date(bill.refundedAt).toLocaleDateString()} ***
+              {bill.refundReason ? <div style={{ fontWeight: 400, fontSize: 11 }}>{bill.refundReason}</div> : null}
+            </div>
+          )}
           {bill.visit.redeemsPass && (
             <div style={{ textAlign: "center", fontSize: 11 }}>1 visit pass redeemed</div>
           )}

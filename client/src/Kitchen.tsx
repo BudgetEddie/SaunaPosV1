@@ -5,7 +5,7 @@ import { authFetch } from "./authFetch.ts";
 
 const socket = io("http://localhost:4000");
 
-type OrderItem = { id: number; name: string };
+type OrderItem = { id: number; name: string; canceled: boolean };
 type Order = {
   id: number;
   status: string;
@@ -63,6 +63,10 @@ function Kitchen() {
     });
   };
 
+  const dismissCanceled = async (itemId: number) => {
+    await authFetch(`/order-items/${itemId}`, { method: "DELETE" });
+  };
+
   return (
     <div style={{ padding: 24, fontFamily: "sans-serif" }}>
       <h1>Kitchen — {orders.length} open order{orders.length === 1 ? "" : "s"}</h1>
@@ -72,21 +76,33 @@ function Kitchen() {
           return (
             <div key={col.status} style={{ flex: 1, background: "#f4f4f4", padding: 12, borderRadius: 8 }}>
               <h2>{col.title} ({colOrders.length})</h2>
-              {colOrders.map((o) => (
-                <div key={o.id} style={{ background: "white", padding: 12, borderRadius: 8, marginBottom: 12 }}>
-                  <strong>{o.visit.customer.firstName} {o.visit.customer.lastName}</strong>
-                  {" — "}{o.visit.locker.number}
-                  <span style={{ float: "right", color: "#666" }}>{minutesAgo(o.createdAt)} min</span>
-                  <ul>
-                    {groupItems(o.items).map((g) => (
-                      <li key={g.name}>{g.name} x{g.count}</li>
-                    ))}
-                  </ul>
-                  <button onClick={() => setStatus(o.id, col.next)} style={{ width: "100%" }}>
-                    {col.action}
-                  </button>
-                </div>
-              ))}
+              {colOrders.map((o) => {
+                const activeItems = o.items.filter((i) => !i.canceled);
+                const canceledItems = o.items.filter((i) => i.canceled);
+                return (
+                  <div key={o.id} style={{ background: "white", padding: 12, borderRadius: 8, marginBottom: 12 }}>
+                    <strong>{o.visit.customer.firstName} {o.visit.customer.lastName}</strong>
+                    {" — "}{o.visit.locker.number}
+                    <span style={{ float: "right", color: "#666" }}>{minutesAgo(o.createdAt)} min</span>
+                    <ul>
+                      {groupItems(activeItems).map((g) => (
+                        <li key={g.name}>{g.name} x{g.count}</li>
+                      ))}
+                      {canceledItems.map((item) => (
+                        <li key={item.id} style={{ color: "#c00" }}>
+                          <s>{item.name}</s> — <strong>ORDER CANCELED</strong>{" "}
+                          <button onClick={() => dismissCanceled(item.id)}>Remove</button>
+                        </li>
+                      ))}
+                    </ul>
+                    {activeItems.length > 0 && (
+                      <button onClick={() => setStatus(o.id, col.next)} style={{ width: "100%" }}>
+                        {col.action}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
               {colOrders.length === 0 && <p style={{ color: "#999" }}>Empty</p>}
             </div>
           );

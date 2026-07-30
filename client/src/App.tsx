@@ -32,7 +32,7 @@ type Category = { id: number; name: string; isKitchen: boolean; isAdmission: boo
 type BillLineItem = { id: number; description: string; amount: number; isAdmission: boolean };
 type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 
-type Order = { id: number; status: string; items: { id: number; name: string }[] };
+type Order = { id: number; status: string; items: { id: number; name: string; canceled: boolean }[] };
 type Visit = {
   id: number;
   customer: Customer;
@@ -40,6 +40,14 @@ type Visit = {
   bill: Bill;
   orders: Order[];
   redeemsPass: boolean;
+};
+
+type PendingItem = {
+  key: string;
+  name: string;
+  amount: number;
+  isKitchen: boolean;
+  visitCredits: number;
 };
 
 function billTotal(bill: Bill) {
@@ -90,16 +98,18 @@ function MenuPicker({ categories, onPick }: { categories: Category[]; onPick: (i
   );
 }
 
-function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
+function ActiveVisitRow({ visit, lockers, categories, isAdmin, onChanged }: {
   visit: Visit;
   lockers: Locker[];
   categories: Category[];
+  isAdmin: boolean;
   onChanged: () => void;
 }) {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
   const [newLockerId, setNewLockerId] = useState("");
+  const [pending, setPending] = useState<PendingItem[]>([]);
   const { subtotal, tax, total } = billTotal(visit.bill);
 
   const availableForCustomer = lockers.filter(
@@ -113,48 +123,63 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
     }
   };
 
-  const addLineItem = async (desc: string, amt: number) => {
-    await authFetch(`/bills/${visit.bill.id}/line-items`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description: desc, amount: amt }),
-    });
+  const addPending = (name: string, amount: number, isKitchen: boolean, visitCredits: number) => {
+    setPending((prev) => [...prev, { key: crypto.randomUUID(), name, amount, isKitchen, visitCredits }]);
+  };
+
+  const removePending = (key: string) => {
+    setPending((prev) => prev.filter((p) => p.key !== key));
   };
 
   const pickItem = async (item: MenuItem) => {
     const category = categories.find((c) => c.id === item.categoryId);
 
-    if (item.visitCredits > 0) {
-      // Selling a pass pack wins over everything, whatever category it lives in
-      await authFetch(`/visits/${visit.id}/purchase-pass`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: item.name, amount: item.price, visitCredits: item.visitCredits }),
-      });
-    } else if (category?.isAdmission) {
+    if (item.visitCredits === 0 && category?.isAdmission) {
+      // Admission is a swap, not an add — it stays instant
       await showError(await authFetch(`/visits/${visit.id}/set-admission`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ menuItemId: item.id }),
       }));
-    } else if (category?.isKitchen) {
-      await authFetch(`/visits/${visit.id}/order-item`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: item.name, amount: item.price }),
-      });
-    } else {
-      await addLineItem(item.name, item.price);
+      onChanged();
+      return;
     }
+
+    // Everything else waits in the pending order until confirmed
+    addPending(item.name, item.price, Boolean(category?.isKitchen), item.visitCredits);
+  };
+
+  const addCustomCharge = (e: FormEvent) => {
+    e.preventDefault();
+    if (!description || !amount) return;
+    addPending(description, parseFloat(amount), false, 0);
+    setDescription("");
+    setAmount("");
+  };
+
+  const confirmOrder = async () => {
+    if (pending.length === 0) return;
+    const res = await authFetch(`/visits/${visit.id}/confirm-order`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: pending.map((p) => ({
+          name: p.name,
+          amount: p.amount,
+          isKitchen: p.isKitchen,
+          visitCredits: p.visitCredits,
+        })),
+      }),
+    });
+    await showError(res);
+    if (res.ok) setPending([]);
     onChanged();
   };
 
-  const addCustomCharge = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!description || !amount) return;
-    await addLineItem(description, parseFloat(amount));
-    setDescription("");
-    setAmount("");
+  const removeLineItem = async (item: BillLineItem) => {
+    if (!confirm(`Remove "${item.description}" ($${item.amount.toFixed(2)}) from this bill?`)) return;
+    await showError(await authFetch(`/bills/${visit.bill.id}/line-items/${item.id}`, { method: "DELETE" }));
+    onChanged();
   };
 
   const changeLocker = async () => {
@@ -169,6 +194,10 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
   };
 
   const checkOut = async () => {
+    if (pending.length > 0) {
+      alert("This visit has an unconfirmed pending order — confirm it or clear it first.");
+      return;
+    }
     await showError(await authFetch(`/check-out`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -177,7 +206,12 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
     onChanged();
   };
 
-  const openOrders = visit.orders.filter((o) => o.status !== "COMPLETE");
+  // On the POS side, canceled kitchen items are simply hidden (the bill line is
+  // already gone); the kitchen screen is where the cancellation is displayed.
+  const openOrders = visit.orders.filter(
+    (o) => o.status !== "COMPLETE" && o.items.some((i) => !i.canceled)
+  );
+  const pendingTotal = pending.reduce((sum, p) => sum + p.amount, 0);
 
   return (
     <li style={{ padding: 12, borderBottom: "1px solid #ddd" }}>
@@ -193,6 +227,12 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
           <li key={item.id}>
             {item.description} — ${item.amount.toFixed(2)}
             {item.isAdmission ? <em style={{ color: "#666" }}> (admission)</em> : ""}
+            {isAdmin && !item.isAdmission && (
+              <>
+                {" "}
+                <button onClick={() => removeLineItem(item)} title="Remove from bill (admin)">Remove</button>
+              </>
+            )}
           </li>
         ))}
       </ul>
@@ -200,13 +240,34 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
 
       <MenuPicker categories={categories} onPick={pickItem} />
 
+      {pending.length > 0 && (
+        <div style={{ marginTop: 8, padding: 8, border: "2px dashed #b5563a", borderRadius: 6 }}>
+          <strong>Pending order</strong> <em style={{ color: "#666" }}>— not on the bill yet</em>
+          <ul style={{ margin: 4 }}>
+            {pending.map((p) => (
+              <li key={p.key}>
+                {p.name} — ${p.amount.toFixed(2)}
+                {p.isKitchen ? " · kitchen" : ""}
+                {p.visitCredits > 0 ? ` · grants ${p.visitCredits} visits` : ""}{" "}
+                <button onClick={() => removePending(p.key)}>✕</button>
+              </li>
+            ))}
+          </ul>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span>Pending total: ${pendingTotal.toFixed(2)}</span>
+            <button onClick={confirmOrder} style={{ fontWeight: 700 }}>Confirm order</button>
+            <button onClick={() => setPending([])}>Clear all</button>
+          </div>
+        </div>
+      )}
+
       {openOrders.length > 0 && (
         <div style={{ marginTop: 8, padding: 8, background: "#f4f4f4", borderRadius: 6 }}>
           <strong>Kitchen orders</strong>
           <ul style={{ margin: 4 }}>
             {openOrders.map((o) => (
               <li key={o.id}>
-                {groupItems(o.items).map((g) => `${g.name} x${g.count}`).join(", ")} —{" "}
+                {groupItems(o.items.filter((i) => !i.canceled)).map((g) => `${g.name} x${g.count}`).join(", ")} —{" "}
                 <em>{o.status.replace("_", " ").toLowerCase()}</em>
               </li>
             ))}
@@ -217,7 +278,7 @@ function ActiveVisitRow({ visit, lockers, categories, onChanged }: {
       <form onSubmit={addCustomCharge} style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <input placeholder="Custom charge" value={description} onChange={(e) => setDescription(e.target.value)} />
         <input placeholder="Amount" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ width: 90 }} />
-        <button type="submit">Add</button>
+        <button type="submit">Add to order</button>
       </form>
 
       <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
@@ -624,6 +685,8 @@ function App() {
     return <Login onLogin={handleLogin} />;
   }
 
+  const isAdmin = user.role === "ADMIN";
+
   const query = search.trim().toLowerCase();
   const visibleCustomers = query
     ? customers.filter((c) =>
@@ -647,11 +710,11 @@ function App() {
         <h1>Sauna POS</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ color: "#666" }}>
-            {user.displayName} · {user.role === "ADMIN" ? "admin" : "staff"}
+            {user.displayName} · {isAdmin ? "admin" : "staff"}
           </span>
           <a href="/kitchen" target="_blank">Kitchen screen</a>
           <a href="/reports" target="_blank">Reports</a>
-          {user.role === "ADMIN" && (
+          {isAdmin && (
             <button onClick={() => setShowMenuEditor((v) => !v)}>
               {showMenuEditor ? "Close menu editor" : "Edit menu"}
             </button>
@@ -660,7 +723,7 @@ function App() {
         </div>
       </div>
 
-      {showMenuEditor && user.role === "ADMIN" && (
+      {showMenuEditor && isAdmin && (
         <MenuEditor
           categories={categories}
           taxRate={taxRate}
@@ -687,6 +750,7 @@ function App() {
             visit={v}
             lockers={lockers}
             categories={categories}
+            isAdmin={isAdmin}
             onChanged={() => { loadActiveVisits(); loadLockers(); }}
           />
         ))}

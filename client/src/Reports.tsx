@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { authFetch } from "./authFetch.ts";
 
 const METHOD_LABELS: Record<string, string> = {
@@ -19,6 +19,7 @@ type ReportBill = {
   customer: string;
   locker: string;
   redeemsPass: boolean;
+  refunded: boolean;
 };
 
 type Report = {
@@ -29,6 +30,9 @@ type Report = {
   tax: number;
   total: number;
   byMethod: Record<string, number>;
+  refundCount: number;
+  refundsGiven: number;
+  net: number;
   bills: ReportBill[];
 };
 
@@ -57,11 +61,34 @@ function Reports() {
   const [date, setDate] = useState(todayStr());
   const [report, setReport] = useState<Report | null>(null);
   const signedIn = Boolean(localStorage.getItem("token"));
+  const user = JSON.parse(localStorage.getItem("user") ?? "null");
+  const isAdmin = user?.role === "ADMIN";
+
+  const load = useCallback(() => {
+    authFetch(`/reports/daily?date=${date}`).then((r) => r.json()).then(setReport);
+  }, [date]);
 
   useEffect(() => {
     if (!signedIn) return;
-    authFetch(`/reports/daily?date=${date}`).then((r) => r.json()).then(setReport);
-  }, [date, signedIn]);
+    load();
+  }, [load, signedIn]);
+
+  const refund = async (b: ReportBill) => {
+    const reason = prompt(
+      `Refund ${b.customer}'s ${money(b.total)} bill (paid by ${METHOD_LABELS[b.paymentMethod] ?? b.paymentMethod})?\n\nReason (optional):`
+    );
+    if (reason === null) return; // Cancel pressed
+    const res = await authFetch(`/bills/${b.id}/refund`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    });
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+    }
+    load();
+  };
 
   if (!signedIn) {
     return (
@@ -73,7 +100,7 @@ function Reports() {
   }
 
   return (
-    <div style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 900 }}>
+    <div style={{ padding: 24, fontFamily: "sans-serif", maxWidth: 960 }}>
       <h1>Daily report</h1>
       <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ padding: 8, fontSize: 15 }} />
 
@@ -81,6 +108,8 @@ function Reports() {
         <>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 16 }}>
             <SummaryCard label="Total taken" value={money(report.total)} />
+            <SummaryCard label="Refunds given" value={money(report.refundsGiven)} />
+            <SummaryCard label="Net" value={money(report.net)} />
             <SummaryCard label="Tax collected" value={money(report.tax)} />
             <SummaryCard label="Bills closed" value={String(report.billCount)} />
             <SummaryCard label="Passes redeemed" value={String(report.passesRedeemed)} />
@@ -106,17 +135,26 @@ function Reports() {
               </thead>
               <tbody>
                 {report.bills.map((b) => (
-                  <tr key={b.id}>
+                  <tr key={b.id} style={b.refunded ? { color: "#999" } : undefined}>
                     <td style={cell}>{new Date(b.paidAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</td>
                     <td style={cell}>{b.customer}</td>
                     <td style={cell}>{b.locker}</td>
                     <td style={cell}>
                       {METHOD_LABELS[b.paymentMethod] ?? b.paymentMethod}
                       {b.redeemsPass ? " · pass" : ""}
+                      {b.refunded ? <strong style={{ color: "#c00" }}> · REFUNDED</strong> : ""}
                     </td>
-                    <td style={{ ...cell, textAlign: "right" }}>{money(b.total)}</td>
+                    <td style={{ ...cell, textAlign: "right", textDecoration: b.refunded ? "line-through" : "none" }}>
+                      {money(b.total)}
+                    </td>
                     <td style={cell}>
                       <a href={`/receipt/${b.id}`} target="_blank">Receipt</a>
+                      {isAdmin && !b.refunded && (
+                        <>
+                          {" "}
+                          <button onClick={() => refund(b)}>Refund</button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
