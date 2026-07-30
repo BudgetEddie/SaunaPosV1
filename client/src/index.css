@@ -138,3 +138,40 @@ code {
   .no-print { display: none !important; }
   body { background: #fff !important; }
 }
+
+/* ---- App shell (Banya theme) ---- */
+
+/* Vite's starter CSS centers everything in a 1280px box — the shell needs the
+   whole window. These override those defaults app-wide. */
+body {
+  display: block;
+  margin: 0;
+}
+#root {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+/* Sidebar navigation links. React Router adds the "active" class for the
+   page you're on — that's what lights up the ember-red edge. */
+.side-link {
+  display: block;
+  padding: 11px 18px;
+  color: rgba(244, 239, 231, 0.72);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  border-left: 3px solid transparent;
+}
+.side-link:hover {
+  color: #f4efe7;
+  background: rgba(244, 239, 231, 0.06);
+}
+.side-link.active {
+  color: #f4efe7;
+  background: rgba(244, 239, 231, 0.1);
+  border-left-color: #b5563a;
+}

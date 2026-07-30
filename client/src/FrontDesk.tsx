@@ -1,8 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
 import { groupItems } from "./groupItems.ts";
-import { authFetch, type LoggedInUser } from "./authFetch.ts";
-import Login from "./Login.tsx";
+import { authFetch } from "./authFetch.ts";
 
 const socket = io("http://localhost:4000");
 
@@ -342,246 +341,11 @@ function CustomerRow({ customer, lockers, isCheckedIn, onCheckedIn }: {
   );
 }
 
-function MenuEditor({ categories, taxRate, defaultAdmissionItemId, onClose }: {
-  categories: Category[];
-  taxRate: number;
-  defaultAdmissionItemId: number | null;
-  onClose: () => void;
-}) {
-  const [newCategoryName, setNewCategoryName] = useState("");
-  const [newCategoryKitchen, setNewCategoryKitchen] = useState(false);
-  const [newCategoryAdmission, setNewCategoryAdmission] = useState(false);
-  const [taxPercent, setTaxPercent] = useState(String((taxRate * 100).toFixed(2)));
-  const [defaultAdmission, setDefaultAdmission] = useState(
-    defaultAdmissionItemId ? String(defaultAdmissionItemId) : ""
-  );
-  const [itemCategoryId, setItemCategoryId] = useState("");
-  const [itemName, setItemName] = useState("");
-  const [itemPrice, setItemPrice] = useState("");
-  const [itemDescription, setItemDescription] = useState("");
-  const [itemVisitCredits, setItemVisitCredits] = useState("");
-  const [itemRedeemsPass, setItemRedeemsPass] = useState(false);
-
-  const admissionItems = categories.filter((c) => c.isAdmission).flatMap((c) => c.items);
-
-  const showError = async (res: Response) => {
-    if (!res.ok) {
-      const { error } = await res.json();
-      alert(error);
-    }
-  };
-
-  const addCategory = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!newCategoryName) return;
-    await showError(await authFetch(`/categories`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: newCategoryName,
-        isKitchen: newCategoryKitchen,
-        isAdmission: newCategoryAdmission,
-      }),
-    }));
-    setNewCategoryName("");
-    setNewCategoryKitchen(false);
-    setNewCategoryAdmission(false);
-  };
-
-  const updateCategory = async (c: Category, changes: Partial<Category>) => {
-    await showError(await authFetch(`/categories/${c.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: changes.name ?? c.name,
-        isKitchen: changes.isKitchen ?? c.isKitchen,
-        isAdmission: changes.isAdmission ?? c.isAdmission,
-      }),
-    }));
-  };
-
-  const renameCategory = async (c: Category) => {
-    const name = prompt("New category name:", c.name);
-    if (!name || name === c.name) return;
-    await updateCategory(c, { name });
-  };
-
-  const deleteCategory = async (id: number) => {
-    if (!confirm("Delete this category?")) return;
-    await showError(await authFetch(`/categories/${id}`, { method: "DELETE" }));
-  };
-
-  const addItem = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!itemCategoryId || !itemName || !itemPrice) return;
-    await showError(await authFetch(`/menu-items`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        categoryId: Number(itemCategoryId),
-        name: itemName,
-        price: parseFloat(itemPrice),
-        description: itemDescription || null,
-        visitCredits: itemVisitCredits ? parseInt(itemVisitCredits, 10) : 0,
-        redeemsPass: itemRedeemsPass,
-      }),
-    }));
-    setItemName("");
-    setItemPrice("");
-    setItemDescription("");
-    setItemVisitCredits("");
-    setItemRedeemsPass(false);
-  };
-
-  const editItem = async (item: MenuItem) => {
-    const name = prompt("Item name:", item.name);
-    if (name === null) return;
-    const priceStr = prompt("Price:", String(item.price));
-    if (priceStr === null) return;
-    const description = prompt("Description (optional):", item.description ?? "");
-    if (description === null) return;
-    const creditsStr = prompt("Visit credits granted when sold (0 for a normal item):", String(item.visitCredits));
-    if (creditsStr === null) return;
-    const redeemsStr = prompt("Does this admission redeem a visit pass? (yes/no)", item.redeemsPass ? "yes" : "no");
-    if (redeemsStr === null) return;
-    await showError(await authFetch(`/menu-items/${item.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        categoryId: item.categoryId,
-        name: name || item.name,
-        price: parseFloat(priceStr) || item.price,
-        description: description || null,
-        visitCredits: parseInt(creditsStr, 10) || 0,
-        redeemsPass: redeemsStr.trim().toLowerCase().startsWith("y"),
-      }),
-    }));
-  };
-
-  const deleteItem = async (id: number) => {
-    if (!confirm("Delete this item? Existing bills are unaffected.")) return;
-    await showError(await authFetch(`/menu-items/${id}`, { method: "DELETE" }));
-  };
-
-  const saveTax = async () => {
-    const rate = parseFloat(taxPercent) / 100;
-    await showError(await authFetch(`/settings`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taxRate: rate }),
-    }));
-    alert("Tax rate saved. Applies to new check-ins; existing bills keep their rate.");
-  };
-
-  const saveDefaultAdmission = async () => {
-    await showError(await authFetch(`/settings`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ defaultAdmissionItemId: defaultAdmission ? Number(defaultAdmission) : null }),
-    }));
-    alert("Default admission saved. Applies to new check-ins.");
-  };
-
-  return (
-    <div style={{ border: "2px solid #333", padding: 16, marginBottom: 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Edit menu</h2>
-        <button onClick={onClose}>Close</button>
-      </div>
-
-      <h3>Tax rate</h3>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input type="number" step="0.01" value={taxPercent} onChange={(e) => setTaxPercent(e.target.value)} style={{ width: 90 }} /> %
-        <button onClick={saveTax}>Save tax rate</button>
-      </div>
-
-      <h3>Default admission</h3>
-      <p style={{ color: "#666", margin: "4px 0" }}>
-        Billed automatically at check-in. Staff can override it per visit. Pick a paying admission here, not the pass one.
-      </p>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <select value={defaultAdmission} onChange={(e) => setDefaultAdmission(e.target.value)}>
-          <option value="">No automatic admission charge</option>
-          {admissionItems.map((i) => (
-            <option key={i.id} value={i.id}>{i.name} — ${i.price.toFixed(2)}</option>
-          ))}
-        </select>
-        <button onClick={saveDefaultAdmission}>Save default</button>
-      </div>
-
-      <h3>Categories</h3>
-      <form onSubmit={addCategory} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <input placeholder="New category name" value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} />
-        <label>
-          <input type="checkbox" checked={newCategoryKitchen} onChange={(e) => setNewCategoryKitchen(e.target.checked)} /> kitchen
-        </label>
-        <label>
-          <input type="checkbox" checked={newCategoryAdmission} onChange={(e) => setNewCategoryAdmission(e.target.checked)} /> admission
-        </label>
-        <button type="submit">Add category</button>
-      </form>
-      <ul style={{ listStyle: "none", padding: 0 }}>
-        {categories.map((c) => (
-          <li key={c.id} style={{ padding: 6, borderBottom: "1px solid #eee" }}>
-            <strong>{c.name}</strong> ({c.items.length} items)
-            {c.isKitchen ? " · kitchen" : ""}
-            {c.isAdmission ? " · admission" : ""}{" "}
-            <button onClick={() => updateCategory(c, { isKitchen: !c.isKitchen })}>
-              {c.isKitchen ? "Unset kitchen" : "Set kitchen"}
-            </button>{" "}
-            <button onClick={() => updateCategory(c, { isAdmission: !c.isAdmission })}>
-              {c.isAdmission ? "Unset admission" : "Set admission"}
-            </button>{" "}
-            <button onClick={() => renameCategory(c)}>Rename</button>{" "}
-            <button onClick={() => deleteCategory(c.id)}>Delete</button>
-            <ul>
-              {c.items.map((item) => (
-                <li key={item.id}>
-                  {item.name} — ${item.price.toFixed(2)}
-                  {item.description ? ` · ${item.description}` : ""}
-                  {item.visitCredits > 0 ? ` · grants ${item.visitCredits} visits` : ""}
-                  {item.redeemsPass ? " · redeems a pass" : ""}{" "}
-                  <button onClick={() => editItem(item)}>Edit</button>{" "}
-                  <button onClick={() => deleteItem(item.id)}>Delete</button>
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
-      </ul>
-
-      <h3>Add item</h3>
-      <form onSubmit={addItem} style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 420 }}>
-        <select value={itemCategoryId} onChange={(e) => setItemCategoryId(e.target.value)}>
-          <option value="">Select category…</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-        <input placeholder="Item name" value={itemName} onChange={(e) => setItemName(e.target.value)} />
-        <input placeholder="Price" type="number" step="0.01" value={itemPrice} onChange={(e) => setItemPrice(e.target.value)} />
-        <input placeholder="Description (optional)" value={itemDescription} onChange={(e) => setItemDescription(e.target.value)} />
-        <input placeholder="Visit credits granted when sold (e.g. 10)" type="number" value={itemVisitCredits} onChange={(e) => setItemVisitCredits(e.target.value)} />
-        <label>
-          <input type="checkbox" checked={itemRedeemsPass} onChange={(e) => setItemRedeemsPass(e.target.checked)} /> this admission redeems a visit pass
-        </label>
-        <button type="submit">Add item</button>
-      </form>
-    </div>
-  );
-}
-
-function App() {
-  const [user, setUser] = useState<LoggedInUser | null>(
-    JSON.parse(localStorage.getItem("user") ?? "null")
-  );
+function FrontDesk() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [activeVisits, setActiveVisits] = useState<Visit[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [taxRate, setTaxRate] = useState(0.13);
-  const [defaultAdmissionItemId, setDefaultAdmissionItemId] = useState<number | null>(null);
-  const [showMenuEditor, setShowMenuEditor] = useState(false);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [gender, setGender] = useState("MALE");
@@ -589,6 +353,9 @@ function App() {
   const [email, setEmail] = useState("");
   const [search, setSearch] = useState("");
   const [lockerSearch, setLockerSearch] = useState("");
+
+  const user = JSON.parse(localStorage.getItem("user") ?? "null");
+  const isAdmin = user?.role === "ADMIN";
 
   const loadActiveVisits = () => {
     authFetch(`/visits/active`).then((r) => r.json()).then(setActiveVisits);
@@ -602,21 +369,12 @@ function App() {
   const loadCustomers = () => {
     authFetch(`/customers`).then((r) => r.json()).then(setCustomers);
   };
-  const loadSettings = () => {
-    authFetch(`/settings`).then((r) => r.json()).then((s) => {
-      setTaxRate(s.taxRate);
-      setDefaultAdmissionItemId(s.defaultAdmissionItemId);
-    });
-  };
 
   useEffect(() => {
-    if (!user) return; // signed out: nothing to load, no sockets to join
-
     loadCustomers();
     loadLockers();
     loadActiveVisits();
     loadMenu();
-    loadSettings();
 
     socket.on("customer:created", (customer: Customer) => {
       setCustomers((prev) => [customer, ...prev]);
@@ -636,10 +394,6 @@ function App() {
     socket.on("bill:line-item-added", () => loadActiveVisits());
     socket.on("orders:changed", () => loadActiveVisits());
     socket.on("menu:updated", () => loadMenu());
-    socket.on("settings:updated", (s: { taxRate: number; defaultAdmissionItemId: number | null }) => {
-      setTaxRate(s.taxRate);
-      setDefaultAdmissionItemId(s.defaultAdmissionItemId);
-    });
 
     return () => {
       socket.off("customer:created");
@@ -651,22 +405,8 @@ function App() {
       socket.off("bill:line-item-added");
       socket.off("orders:changed");
       socket.off("menu:updated");
-      socket.off("settings:updated");
     };
-  }, [user]);
-
-  const handleLogin = (loggedIn: LoggedInUser, token: string) => {
-    localStorage.setItem("token", token);
-    localStorage.setItem("user", JSON.stringify(loggedIn));
-    setUser(loggedIn);
-  };
-
-  const signOut = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    setShowMenuEditor(false);
-    setUser(null);
-  };
+  }, []);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -680,12 +420,6 @@ function App() {
     setPhone("");
     setEmail("");
   };
-
-  if (!user) {
-    return <Login onLogin={handleLogin} />;
-  }
-
-  const isAdmin = user.role === "ADMIN";
 
   const query = search.trim().toLowerCase();
   const visibleCustomers = query
@@ -701,40 +435,10 @@ function App() {
     : activeVisits;
 
   const checkedInCustomerIds = new Set(activeVisits.map((v) => v.customer.id));
-  const availableCount = (g: string) => lockers.filter((l) => l.gender === g && l.status === "AVAILABLE").length;
-  const totalCount = (g: string) => lockers.filter((l) => l.gender === g).length;
 
   return (
-    <div style={{ padding: 40, fontFamily: "sans-serif", maxWidth: 760 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1>Sauna POS</h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ color: "#666" }}>
-            {user.displayName} · {isAdmin ? "admin" : "staff"}
-          </span>
-          <a href="/kitchen" target="_blank">Kitchen screen</a>
-          <a href="/reports" target="_blank">Reports</a>
-          {isAdmin && (
-            <button onClick={() => setShowMenuEditor((v) => !v)}>
-              {showMenuEditor ? "Close menu editor" : "Edit menu"}
-            </button>
-          )}
-          <button onClick={signOut}>Sign out</button>
-        </div>
-      </div>
-
-      {showMenuEditor && isAdmin && (
-        <MenuEditor
-          categories={categories}
-          taxRate={taxRate}
-          defaultAdmissionItemId={defaultAdmissionItemId}
-          onClose={() => setShowMenuEditor(false)}
-        />
-      )}
-
-      <h2>Occupancy</h2>
-      <p>Male lockers: {availableCount("MALE")} / {totalCount("MALE")} available</p>
-      <p>Female lockers: {availableCount("FEMALE")} / {totalCount("FEMALE")} available</p>
+    <div style={{ padding: "18px 26px 30px", maxWidth: 760 }}>
+      <h1 style={{ margin: "0 0 12px", fontSize: 22, fontWeight: 800 }}>Front desk</h1>
 
       <h2>Currently checked in</h2>
       <input
@@ -795,4 +499,4 @@ function App() {
   );
 }
 
-export default App;
+export default FrontDesk;
