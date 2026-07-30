@@ -633,7 +633,9 @@ app.post("/bills/:id/refund", requireAdmin, async (req, res) => {
 
 // ---- Reports & receipts ----
 
-app.get("/reports/daily", async (req, res) => {
+app.get("/reports/daily", requireAdmin, async (req, res) => {
+  const allHistory = String(req.query.scope ?? "day") === "all";
+
   // Expect ?date=YYYY-MM-DD; default to today. Parsed by hand into local
   // year/month/day — new Date("2026-07-29") would read it as UTC midnight,
   // which shifts the day boundary by your timezone offset.
@@ -650,8 +652,12 @@ app.get("/reports/daily", async (req, res) => {
   const start = new Date(y, m - 1, d);
   const end = new Date(y, m - 1, d + 1); // JS rolls month/year over automatically
 
+  // In all-history mode the window is simply "has been paid at all".
+  const paidWindow = allHistory ? { not: null } : { gte: start, lt: end };
+  const refundWindow = allHistory ? { not: null } : { gte: start, lt: end };
+
   const paidBills = await prisma.bill.findMany({
-    where: { paidAt: { gte: start, lt: end } },
+    where: { paidAt: paidWindow },
     include: {
       lineItems: true,
       visit: { include: { customer: true, locker: true } },
@@ -689,10 +695,26 @@ app.get("/reports/daily", async (req, res) => {
     };
   });
 
+  // Best sellers — every charge is one unit, so counting line items counts
+  // quantity. A refunded bill didn't really sell anything, so it's left out.
+  const sellers = new Map<string, { name: string; qty: number; revenue: number }>();
+  for (const b of paidBills) {
+    if (b.refundedAt) continue;
+    for (const li of b.lineItems) {
+      const row = sellers.get(li.description) ?? { name: li.description, qty: 0, revenue: 0 };
+      row.qty += 1;
+      row.revenue += li.amount;
+      sellers.set(li.description, row);
+    }
+  }
+  const topItems = Array.from(sellers.values())
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 8);
+
   // Refunds are bucketed by the day they were GIVEN (refundedAt), not the day
   // the bill was paid — yesterday's drawer count shouldn't change retroactively.
   const refundedBills = await prisma.bill.findMany({
-    where: { refundedAt: { gte: start, lt: end } },
+    where: { refundedAt: refundWindow },
     include: { lineItems: true },
   });
   const refundsGiven = refundedBills.reduce((sum, b) => {
@@ -700,7 +722,35 @@ app.get("/reports/daily", async (req, res) => {
     return sum + st * (1 + b.taxRate);
   }, 0);
 
+  // Most frequent visitors — always all-time, whatever date is selected.
+  const customers = await prisma.customer.findMany({
+    include: {
+      visits: {
+        where: { checkOutAt: { not: null } },
+        include: { bill: { include: { lineItems: true } } },
+      },
+    },
+  });
+  const frequentVisitors = customers
+    .map((c) => {
+      const spend = c.visits.reduce((sum, v) => {
+        if (!v.bill || !v.bill.paidAt || v.bill.refundedAt) return sum;
+        const st = v.bill.lineItems.reduce((s, li) => s + li.amount, 0);
+        return sum + st * (1 + v.bill.taxRate);
+      }, 0);
+      return {
+        id: c.id,
+        name: `${c.firstName} ${c.lastName}`,
+        visits: c.visits.length,
+        spend,
+      };
+    })
+    .filter((v) => v.visits > 0)
+    .sort((a, b) => b.visits - a.visits || b.spend - a.spend)
+    .slice(0, 8);
+
   res.json({
+    scope: allHistory ? "all" : "day",
     date: `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
     billCount: bills.length,
     passesRedeemed,
@@ -711,7 +761,10 @@ app.get("/reports/daily", async (req, res) => {
     refundCount: refundedBills.length,
     refundsGiven,
     net: totalAll - refundsGiven,
-    bills,
+    topItems,
+    frequentVisitors,
+    bills: bills.slice(0, 200),
+    truncated: bills.length > 200,
   });
 });
 

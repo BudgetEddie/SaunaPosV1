@@ -310,3 +310,24 @@ body {
   background: #d8cebc;
   border-radius: 8px;
 }
+
+/* ---- Reports ---- */
+
+.rp-date {
+  border: 1.5px solid #d8cebc;
+  background: #fffdf9;
+  border-radius: 11px;
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #2b2620;
+  outline: none;
+}
+.rp-date:focus {
+  border-color: #7a6a53;
+}
+
+.rp-row:hover {
+  background: #f7f3ea;
+}

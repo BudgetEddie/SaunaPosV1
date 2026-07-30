@@ -39,7 +39,7 @@ function Shell() {
           <NavLink to="/customers" className="side-link">Customer Directory</NavLink>
           <NavLink to="/pos" className="side-link">Point of Sale</NavLink>
           <NavLink to="/kitchen" className="side-link">Kitchen</NavLink>
-          <NavLink to="/reports" className="side-link">Reports</NavLink>
+          {isAdmin && <NavLink to="/reports" className="side-link">Reports</NavLink>}
           <div style={{ flex: 1 }} />
           {isAdmin && <NavLink to="/menu" className="side-link">Menu</NavLink>}
           <div style={{ padding: "12px 18px 6px", fontSize: 12, color: "rgba(244,239,231,.55)" }}>
