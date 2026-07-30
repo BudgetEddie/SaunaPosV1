@@ -1,0 +1,13 @@
+-- CreateEnum
+CREATE TYPE "MenuGroup" AS ENUM ('FOOD_DRINK', 'MERCH_SERVICE');
+
+-- AlterTable
+ALTER TABLE "BillLineItem" ADD COLUMN     "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Category" ADD COLUMN     "group" "MenuGroup" NOT NULL DEFAULT 'FOOD_DRINK';
+
+-- AlterTable
+ALTER TABLE "MenuItem" ADD COLUMN     "available" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "imageData" TEXT,
+ADD COLUMN     "taxRate" DOUBLE PRECISION NOT NULL DEFAULT 0.13;

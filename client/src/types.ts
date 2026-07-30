@@ -18,6 +18,9 @@ export type MenuItem = {
   name: string;
   price: number;
   description: string | null;
+  taxRate: number;
+  imageData: string | null;
+  available: boolean;
   visitCredits: number;
   redeemsPass: boolean;
 };
@@ -25,12 +28,19 @@ export type MenuItem = {
 export type Category = {
   id: number;
   name: string;
+  group: string;
   isKitchen: boolean;
   isAdmission: boolean;
   items: MenuItem[];
 };
 
-export type BillLineItem = { id: number; description: string; amount: number; isAdmission: boolean };
+export type BillLineItem = {
+  id: number;
+  description: string;
+  amount: number;
+  taxRate: number;
+  isAdmission: boolean;
+};
 
 export type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 

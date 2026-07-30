@@ -7,6 +7,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum MenuGroup {
+  FOOD_DRINK
+  MERCH_SERVICE
+}
+
 enum Gender {
   MALE
   FEMALE
@@ -55,6 +60,7 @@ model Settings {
 model Category {
   id          Int        @id @default(autoincrement())
   name        String     @unique
+  group       MenuGroup  @default(FOOD_DRINK)
   isKitchen   Boolean    @default(false)
   isAdmission Boolean    @default(false)
   items       MenuItem[]
@@ -67,6 +73,9 @@ model MenuItem {
   name         String
   price        Float
   description  String?
+  taxRate      Float    @default(0.13)
+  imageData    String?
+  available    Boolean  @default(true)
   visitCredits Int      @default(0)
   redeemsPass  Boolean  @default(false)
 }
@@ -145,6 +154,7 @@ model BillLineItem {
   bill                Bill     @relation(fields: [billId], references: [id])
   description         String
   amount              Float
+  taxRate             Float    @default(0)
   isAdmission         Boolean  @default(false)
   visitCreditsGranted Int      @default(0)
   createdAt           DateTime @default(now())

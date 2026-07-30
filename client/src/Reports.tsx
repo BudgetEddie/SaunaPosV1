@@ -33,7 +33,7 @@ type Report = {
   truncated: boolean;
 };
 
-type ReceiptLine = { id: number; description: string; amount: number; isAdmission: boolean };
+type ReceiptLine = { id: number; description: string; amount: number; taxRate: number; isAdmission: boolean };
 type ReceiptBill = {
   id: number;
   taxRate: number;
@@ -408,7 +408,7 @@ function Reports() {
 
             {(() => {
               const sub = receipt.lineItems.reduce((s, l) => s + l.amount, 0);
-              const tax = sub * receipt.taxRate;
+              const tax = receipt.lineItems.reduce((s, l) => s + l.amount * l.taxRate, 0);
               return (
                 <>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#6b6152", padding: "3px 0" }}>

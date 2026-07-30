@@ -128,7 +128,7 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
 
   const rows = groupBill(visit.bill.lineItems);
   const subtotal = visit.bill.lineItems.reduce((sum, i) => sum + i.amount, 0);
-  const tax = subtotal * visit.bill.taxRate;
+  const tax = visit.bill.lineItems.reduce((sum, i) => sum + i.amount * i.taxRate, 0);
   const total = subtotal + tax;
 
   // A charge counts as a kitchen item if the kitchen was ever sent something
@@ -342,7 +342,7 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "baseline", gap: 40 }}>
                 <span style={{ fontSize: 14, color: "#6b6152", fontWeight: 600 }}>
-                  Tax ({(visit.bill.taxRate * 100).toFixed(2)}%)
+                  Tax {subtotal > 0 ? `(${((tax / subtotal) * 100).toFixed(2)}%)` : ""}
                 </span>
                 <span style={{ width: 110, textAlign: "right", fontSize: 15, fontWeight: 700 }}>{money(tax)}</span>
               </div>

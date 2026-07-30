@@ -24,7 +24,7 @@ type BillData = {
   paidAt: string | null;
   refundedAt: string | null;
   refundReason: string | null;
-  lineItems: { id: number; description: string; amount: number; isAdmission: boolean }[];
+  lineItems: { id: number; description: string; amount: number; taxRate: number; isAdmission: boolean }[];
   visit: {
     checkInAt: string;
     redeemsPass: boolean;
@@ -66,7 +66,7 @@ function Receipt() {
   }
 
   const subtotal = bill.lineItems.reduce((sum, li) => sum + li.amount, 0);
-  const tax = subtotal * bill.taxRate;
+  const tax = bill.lineItems.reduce((sum, li) => sum + li.amount * li.taxRate, 0);
   const total = subtotal + tax;
   const when = bill.paidAt ?? bill.visit.checkInAt;
 
@@ -96,7 +96,7 @@ function Receipt() {
 
       <div style={dashed} />
       <Row left="Subtotal" right={money(subtotal)} />
-      <Row left={`HST (${(bill.taxRate * 100).toFixed(0)}%)`} right={money(tax)} />
+      <Row left={subtotal > 0 ? `HST (${((tax / subtotal) * 100).toFixed(2)}%)` : "HST"} right={money(tax)} />
       <Row left="TOTAL" right={money(total)} bold />
 
       <div style={dashed} />

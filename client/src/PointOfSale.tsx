@@ -16,6 +16,7 @@ type CartLine = {
   price: number;
   isKitchen: boolean;
   visitCredits: number;
+  taxRate: number;
   note: string;
   qty: number;
 };
@@ -106,6 +107,7 @@ function PointOfSale() {
   const [visits, setVisits] = useState<Visit[]>([]);
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [defaultTaxRate, setDefaultTaxRate] = useState(0.13);
   const [selectedVisitId, setSelectedVisitId] = useState<number | null>(null);
   const [checkoutVisit, setCheckoutVisit] = useState<Visit | null>(null);
   const [autoOpened, setAutoOpened] = useState(false);
@@ -125,11 +127,14 @@ function PointOfSale() {
   const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
   const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
+  const loadSettings = () =>
+    authFetch(`/settings`).then((r) => r.json()).then((s) => setDefaultTaxRate(s.taxRate));
 
   useEffect(() => {
     loadVisits();
     loadLockers();
     loadMenu();
+    loadSettings();
 
     const refresh = () => { loadVisits(); loadLockers(); };
     socket.on("visit:checked-in", refresh);
@@ -231,6 +236,7 @@ function PointOfSale() {
       price: item.price,
       isKitchen: category.isKitchen,
       visitCredits: item.visitCredits,
+      taxRate: item.taxRate,
       note: "",
     }, 1);
   };
@@ -245,6 +251,7 @@ function PointOfSale() {
       price: amount,
       isKitchen: false,
       visitCredits: 0,
+      taxRate: defaultTaxRate,
       note: "",
     }, 1);
     setCustomName("");
@@ -297,7 +304,8 @@ function PointOfSale() {
   const cartLines = Object.values(cart);
   const cartCount = cartLines.reduce((n, l) => n + l.qty, 0);
   const cartSubtotal = cartLines.reduce((sum, l) => sum + l.price * l.qty, 0);
-  const cartTax = cartSubtotal * (selected?.bill.taxRate ?? 0);
+  // Every line brings its own rate now — a 0% massage next to a 13% sandwich.
+  const cartTax = cartLines.reduce((sum, l) => sum + l.price * l.qty * l.taxRate, 0);
 
   const q = query.trim().toLowerCase();
   const filtered = q
@@ -498,7 +506,7 @@ function PointOfSale() {
                   )}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-                  {category.items.map((item) => {
+                  {category.items.filter((item) => item.available).map((item) => {
                     const isSwap = category.isAdmission && item.visitCredits === 0;
                     const qty = cart[`m${item.id}`]?.qty ?? 0;
                     const applied = isSwap && currentAdmission?.description === item.name;
@@ -511,7 +519,12 @@ function PointOfSale() {
                         title={item.description ?? ""}
                         style={{ border: `1.5px solid ${lit ? "#7a6a53" : "rgba(43,38,32,.09)"}`, background: lit ? "#f7f3ea" : "#fffdf9", borderRadius: 13, padding: "12px 13px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6, minHeight: 80, justifyContent: "space-between" }}
                       >
-                        <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25 }}>{item.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                          {item.imageData && (
+                            <img src={item.imageData} alt="" style={{ width: 34, height: 34, flex: "none", borderRadius: 8, objectFit: "cover" }} />
+                          )}
+                          <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25 }}>{item.name}</div>
+                        </div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                           <span style={{ fontSize: 13, fontWeight: 800, color: "#7a6a53" }}>{money(item.price)}</span>
                           {qty > 0 && (

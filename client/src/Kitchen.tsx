@@ -18,7 +18,7 @@ type KitchenOrder = {
   };
 };
 type RosterEntry = { username: string; displayName: string; role: string };
-type CartLine = { qty: number; note: string; name: string; price: number };
+type CartLine = { qty: number; note: string; name: string; price: number; taxRate: number };
 type Cart = Record<number, CartLine>;
 
 const COLUMNS = [
@@ -121,13 +121,13 @@ function Kitchen() {
     setCart({});
   };
 
-  const bump = (item: { id: number; name: string; price: number }, delta: number) => {
+  const bump = (item: { id: number; name: string; price: number; taxRate: number }, delta: number) => {
     setCart((prev) => {
       const next = { ...prev };
       const line = next[item.id];
       const qty = (line?.qty ?? 0) + delta;
       if (qty <= 0) delete next[item.id];
-      else next[item.id] = { qty, note: line?.note ?? "", name: item.name, price: item.price };
+      else next[item.id] = { qty, note: line?.note ?? "", name: item.name, price: item.price, taxRate: item.taxRate };
       return next;
     });
   };
@@ -149,6 +149,7 @@ function Kitchen() {
         amount: line.price,
         isKitchen: true,
         visitCredits: 0,
+        taxRate: line.taxRate,
         note: line.note,
       }))
     );
@@ -439,7 +440,7 @@ function Kitchen() {
                 <div key={category.id}>
                   <div style={{ ...LABEL, marginBottom: 11 }}>{category.name}</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 11 }}>
-                    {category.items.map((item) => {
+                    {category.items.filter((item) => item.available).map((item) => {
                       const line = cart[item.id];
                       const qty = line?.qty ?? 0;
                       return (

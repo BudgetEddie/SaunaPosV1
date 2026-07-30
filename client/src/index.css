@@ -331,3 +331,40 @@ body {
 .rp-row:hover {
   background: #f7f3ea;
 }
+
+/* ---- Menu editor ---- */
+
+.mn-in {
+  width: 100%;
+  border: 1.5px solid #d8cebc;
+  outline: none;
+  background: #fffdf9;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2b2620;
+}
+.mn-in:focus {
+  border-color: #7a6a53;
+}
+
+.mn-search {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #2b2620;
+}
+.mn-search::placeholder {
+  color: #b8ab97;
+  font-weight: 600;
+}
+
+.mn-row:hover {
+  background: #f7f3ea;
+}

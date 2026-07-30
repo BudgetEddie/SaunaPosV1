@@ -123,11 +123,18 @@ app.get("/categories", async (_req, res) => {
 });
 
 app.post("/categories", requireAdmin, async (req, res) => {
-  const { name, isKitchen, isAdmission } = req.body;
+  const { name, group, isAdmission } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
+  const menuGroup = group === "MERCH_SERVICE" ? "MERCH_SERVICE" : "FOOD_DRINK";
   try {
     const category = await prisma.category.create({
-      data: { name, isKitchen: Boolean(isKitchen), isAdmission: Boolean(isAdmission) },
+      data: {
+        name,
+        group: menuGroup,
+        // Food & drinks is what the kitchen cooks — that's the whole rule now.
+        isKitchen: menuGroup === "FOOD_DRINK",
+        isAdmission: Boolean(isAdmission),
+      },
     });
     io.emit("menu:updated", {});
     res.status(201).json(category);
@@ -138,11 +145,17 @@ app.post("/categories", requireAdmin, async (req, res) => {
 
 app.put("/categories/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const { name, isKitchen, isAdmission } = req.body;
+  const { name, group, isAdmission } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
+  const menuGroup = group === "MERCH_SERVICE" ? "MERCH_SERVICE" : "FOOD_DRINK";
   const category = await prisma.category.update({
     where: { id },
-    data: { name, isKitchen: Boolean(isKitchen), isAdmission: Boolean(isAdmission) },
+    data: {
+      name,
+      group: menuGroup,
+      isKitchen: menuGroup === "FOOD_DRINK",
+      isAdmission: Boolean(isAdmission),
+    },
   });
   io.emit("menu:updated", {});
   res.json(category);
@@ -159,38 +172,48 @@ app.delete("/categories/:id", requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Shared by create and update — one place that decides what a menu item is.
+function menuItemData(body: Record<string, unknown>) {
+  return {
+    categoryId: Number(body.categoryId),
+    name: String(body.name),
+    price: Number(body.price),
+    description: body.description ? String(body.description) : null,
+    taxRate: Number.isFinite(Number(body.taxRate)) ? Number(body.taxRate) : 0,
+    imageData: body.imageData ? String(body.imageData) : null,
+    available: body.available === undefined ? true : Boolean(body.available),
+    visitCredits: Number(body.visitCredits) || 0,
+    redeemsPass: Boolean(body.redeemsPass),
+  };
+}
+
 app.post("/menu-items", requireAdmin, async (req, res) => {
-  const { categoryId, name, price, description, visitCredits, redeemsPass } = req.body;
+  const { categoryId, name, price } = req.body;
   if (!categoryId || !name || typeof price !== "number") {
     return res.status(400).json({ error: "categoryId, name, and price are required" });
   }
-  const item = await prisma.menuItem.create({
-    data: {
-      categoryId,
-      name,
-      price,
-      description,
-      visitCredits: visitCredits || 0,
-      redeemsPass: Boolean(redeemsPass),
-    },
-  });
+  const item = await prisma.menuItem.create({ data: menuItemData(req.body) });
   io.emit("menu:updated", {});
   res.status(201).json(item);
 });
 
 app.put("/menu-items/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const { categoryId, name, price, description, visitCredits, redeemsPass } = req.body;
+  const { categoryId, name, price } = req.body;
+  if (!categoryId || !name || typeof price !== "number") {
+    return res.status(400).json({ error: "categoryId, name, and price are required" });
+  }
+  const item = await prisma.menuItem.update({ where: { id }, data: menuItemData(req.body) });
+  io.emit("menu:updated", {});
+  res.json(item);
+});
+
+// Flip one item on or off without opening the editor.
+app.post("/menu-items/:id/available", requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
   const item = await prisma.menuItem.update({
     where: { id },
-    data: {
-      categoryId,
-      name,
-      price,
-      description,
-      visitCredits: visitCredits || 0,
-      redeemsPass: Boolean(redeemsPass),
-    },
+    data: { available: Boolean(req.body.available) },
   });
   io.emit("menu:updated", {});
   res.json(item);
@@ -376,7 +399,13 @@ app.post("/check-in", async (req, res) => {
       : null);
   const admissionLine = admissionItem
     ? await prisma.billLineItem.create({
-        data: { billId: bill.id, description: admissionItem.name, amount: admissionItem.price, isAdmission: true },
+        data: {
+          billId: bill.id,
+          description: admissionItem.name,
+          amount: admissionItem.price,
+          taxRate: admissionItem.taxRate,
+          isAdmission: true,
+        },
       })
     : null;
   const checkedInVisit = passAdmission
@@ -433,7 +462,13 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
   await prisma.$transaction([
     prisma.billLineItem.deleteMany({ where: { billId, isAdmission: true } }),
     prisma.billLineItem.create({
-      data: { billId, description: item.name, amount: item.price, isAdmission: true },
+      data: {
+        billId,
+        description: item.name,
+        amount: item.price,
+        taxRate: item.taxRate,
+        isAdmission: true,
+      },
     }),
     prisma.visit.update({ where: { id: visitId }, data: { redeemsPass: item.redeemsPass } }),
   ]);
@@ -507,6 +542,7 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
           billId,
           description: it.name,
           amount: it.amount,
+          taxRate: Number(it.taxRate) || 0,
           visitCreditsGranted: Number(it.visitCredits) || 0,
         },
       });
@@ -673,7 +709,7 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
 
   const bills = paidBills.map((b) => {
     const subtotal = b.lineItems.reduce((sum, li) => sum + li.amount, 0);
-    const tax = subtotal * b.taxRate;
+    const tax = b.lineItems.reduce((sum, li) => sum + li.amount * li.taxRate, 0);
     const total = subtotal + tax;
     const method = b.paymentMethod ?? "UNKNOWN";
     byMethod[method] = (byMethod[method] ?? 0) + total;
@@ -718,8 +754,7 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
     include: { lineItems: true },
   });
   const refundsGiven = refundedBills.reduce((sum, b) => {
-    const st = b.lineItems.reduce((s, li) => s + li.amount, 0);
-    return sum + st * (1 + b.taxRate);
+    return sum + b.lineItems.reduce((s, li) => s + li.amount * (1 + li.taxRate), 0);
   }, 0);
 
   // Most frequent visitors — always all-time, whatever date is selected.
@@ -735,8 +770,7 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
     .map((c) => {
       const spend = c.visits.reduce((sum, v) => {
         if (!v.bill || !v.bill.paidAt || v.bill.refundedAt) return sum;
-        const st = v.bill.lineItems.reduce((s, li) => s + li.amount, 0);
-        return sum + st * (1 + v.bill.taxRate);
+        return sum + v.bill.lineItems.reduce((s, li) => s + li.amount * (1 + li.taxRate), 0);
       }, 0);
       return {
         id: c.id,
