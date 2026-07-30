@@ -267,6 +267,7 @@ function PointOfSale() {
         amount: line.price,
         isKitchen: line.isKitchen,
         visitCredits: line.visitCredits,
+        taxRate: line.taxRate,
         note: line.note,
       }))
     );
