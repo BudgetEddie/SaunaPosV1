@@ -16,6 +16,7 @@ type CartLine = {
   price: number;
   isKitchen: boolean;
   visitCredits: number;
+  note: string;
   qty: number;
 };
 type Cart = Record<string, CartLine>;
@@ -204,6 +205,14 @@ function PointOfSale() {
     });
   };
 
+  const setCartNote = (id: string, note: string) => {
+    setCart((prev) => {
+      const line = prev[id];
+      if (!line) return prev;
+      return { ...prev, [id]: { ...line, note } };
+    });
+  };
+
   const pickItem = async (item: MenuItem, category: Category) => {
     // Pass packs live inside the Visit category but are ordinary sales — this
     // check has to come first, or selling one would overwrite the entry charge.
@@ -222,6 +231,7 @@ function PointOfSale() {
       price: item.price,
       isKitchen: category.isKitchen,
       visitCredits: item.visitCredits,
+      note: "",
     }, 1);
   };
 
@@ -235,6 +245,7 @@ function PointOfSale() {
       price: amount,
       isKitchen: false,
       visitCredits: 0,
+      note: "",
     }, 1);
     setCustomName("");
     setCustomAmount("");
@@ -249,6 +260,7 @@ function PointOfSale() {
         amount: line.price,
         isKitchen: line.isKitchen,
         visitCredits: line.visitCredits,
+        note: line.note,
       }))
     );
     const ok = await showError(await authFetch(`/visits/${selected.id}/confirm-order`, {
@@ -542,32 +554,43 @@ function PointOfSale() {
             )}
 
             {cartLines.map((line) => (
-              <div key={line.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 16px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{line.name}</div>
-                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
-                    {money(line.price)} each{line.isKitchen ? " · kitchen" : ""}
-                    {line.visitCredits > 0 ? ` · +${line.visitCredits} passes` : ""}
+              <div key={line.id} style={{ padding: "11px 16px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{line.name}</div>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
+                      {money(line.price)} each{line.isKitchen ? " · kitchen" : ""}
+                      {line.visitCredits > 0 ? ` · +${line.visitCredits} passes` : ""}
+                    </div>
+                  </div>
+                  <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 7 }}>
+                    <div
+                      onClick={() => bump(line, -1)}
+                      style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
+                    >
+                      −
+                    </div>
+                    <div style={{ minWidth: 16, textAlign: "center", fontSize: 13.5, fontWeight: 800 }}>{line.qty}</div>
+                    <div
+                      onClick={() => bump(line, 1)}
+                      style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
+                    >
+                      +
+                    </div>
+                  </div>
+                  <div style={{ flex: "none", width: 56, textAlign: "right", fontSize: 13.5, fontWeight: 800 }}>
+                    {money(line.price * line.qty)}
                   </div>
                 </div>
-                <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 7 }}>
-                  <div
-                    onClick={() => bump(line, -1)}
-                    style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
-                  >
-                    −
-                  </div>
-                  <div style={{ minWidth: 16, textAlign: "center", fontSize: 13.5, fontWeight: 800 }}>{line.qty}</div>
-                  <div
-                    onClick={() => bump(line, 1)}
-                    style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
-                  >
-                    +
-                  </div>
-                </div>
-                <div style={{ flex: "none", width: 56, textAlign: "right", fontSize: 13.5, fontWeight: 800 }}>
-                  {money(line.price * line.qty)}
-                </div>
+                {line.isKitchen && (
+                  <input
+                    className="cd-in"
+                    placeholder="Note for the kitchen (temp, allergy, prep…)"
+                    value={line.note}
+                    onChange={(e) => setCartNote(line.id, e.target.value)}
+                    style={{ marginTop: 8, fontSize: 12.5 }}
+                  />
+                )}
               </div>
             ))}
 

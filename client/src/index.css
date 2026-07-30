@@ -278,3 +278,35 @@ body {
   0% { background: #eef4ea; }
   100% { background: transparent; }
 }
+
+/* ---- Kitchen board ---- */
+
+@keyframes fadeIn {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.k-in {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2b2620;
+}
+.k-in::placeholder {
+  color: #b8ab97;
+  font-weight: 600;
+}
+
+/* Slim scrollbars inside the columns, so a busy Queue doesn't get an ugly
+   full-width bar down the middle of the board. */
+.k-col::-webkit-scrollbar {
+  width: 8px;
+}
+.k-col::-webkit-scrollbar-thumb {
+  background: #d8cebc;
+  border-radius: 8px;
+}

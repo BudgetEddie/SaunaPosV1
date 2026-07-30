@@ -1,113 +1,521 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
-import { groupItems } from "./groupItems.ts";
 import { authFetch } from "./authFetch.ts";
+import { type Category, type Visit } from "./types.ts";
 
 const socket = io("http://localhost:4000");
 
-type OrderItem = { id: number; name: string; canceled: boolean };
-type Order = {
+type OrderItemRow = { id: number; name: string; note: string | null; canceled: boolean };
+type KitchenOrder = {
   id: number;
   status: string;
   createdAt: string;
-  items: OrderItem[];
+  items: OrderItemRow[];
   visit: {
-    customer: { firstName: string; lastName: string };
+    id: number;
+    customer: { firstName: string; lastName: string; notes: string | null };
     locker: { number: string };
   };
 };
+type RosterEntry = { username: string; displayName: string; role: string };
+type CartLine = { qty: number; note: string; name: string; price: number };
+type Cart = Record<number, CartLine>;
 
 const COLUMNS = [
-  { status: "QUEUED", title: "Queue", action: "Start prep", next: "IN_PROGRESS" },
-  { status: "IN_PROGRESS", title: "In progress", action: "Mark ready", next: "READY" },
-  { status: "READY", title: "Ready", action: "Picked up", next: "COMPLETE" },
+  { status: "QUEUED", label: "Queue", dot: "#a89a86", next: "IN_PROGRESS", action: "Start Prep", bg: "#7a6a53", ink: "#fff", border: "none" },
+  { status: "IN_PROGRESS", label: "Prep", dot: "#7a6a53", next: "READY", action: "Mark Ready", bg: "#5f7a5a", ink: "#fff", border: "none" },
+  { status: "READY", label: "Ready", dot: "#5f7a5a", next: "COMPLETE", action: "Mark Picked Up", bg: "#fffdf9", ink: "#6b6152", border: "1.5px solid #d8cebc" },
 ];
 
-function minutesAgo(iso: string) {
-  return Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+const LABEL: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: 1.5,
+  textTransform: "uppercase",
+  color: "#a89a86",
+};
+
+function money(n: number) {
+  return `$${n.toFixed(2)}`;
+}
+function initials(first: string, last: string) {
+  return `${first[0] ?? ""}${last[0] ?? ""}`.toUpperCase();
+}
+function nameInitials(name: string) {
+  const parts = name.trim().split(/\s+/);
+  return initials(parts[0] ?? "", parts[1] ?? "");
+}
+function minutesSince(iso: string) {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+}
+
+// Two teas with the same note are one line; two teas where one is "extra hot"
+// stay apart, because the cook needs to see both instructions.
+function groupOrderItems(items: OrderItemRow[]) {
+  const rows = new Map<string, { key: string; name: string; note: string | null; count: number }>();
+  for (const item of items) {
+    const key = `${item.name}|${item.note ?? ""}`;
+    const row = rows.get(key);
+    if (row) row.count += 1;
+    else rows.set(key, { key, name: item.name, note: item.note, count: 1 });
+  }
+  return Array.from(rows.values());
 }
 
 function Kitchen() {
-  const [orders, setOrders] = useState<Order[]>([]);
-  const signedIn = Boolean(localStorage.getItem("token"));
+  const [orders, setOrders] = useState<KitchenOrder[]>([]);
+  const [roster, setRoster] = useState<RosterEntry[]>([]);
+  const [visits, setVisits] = useState<Visit[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [guestQuery, setGuestQuery] = useState("");
+  const [guestVisitId, setGuestVisitId] = useState<number | null>(null);
+  const [cart, setCart] = useState<Cart>({});
+  const [, setTick] = useState(0);
 
-  const load = () => {
-    authFetch(`/orders/open`).then((r) => r.json()).then(setOrders);
-  };
+  const loadOrders = () => authFetch(`/orders/open`).then((r) => r.json()).then(setOrders);
+  const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
+  const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
 
   useEffect(() => {
-    if (!signedIn) return;
-    load();
-    socket.on("orders:changed", load);
-    const timer = setInterval(load, 60000); // refresh "minutes ago" labels
+    loadOrders();
+    loadVisits();
+    loadMenu();
+    authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
+
+    const refresh = () => { loadOrders(); loadVisits(); };
+    socket.on("orders:changed", refresh);
+    socket.on("visit:checked-in", loadVisits);
+    socket.on("visit:checked-out", loadVisits);
+    socket.on("menu:updated", loadMenu);
+
+    // The ticket clocks tick themselves; nothing is fetched for this.
+    const timer = setInterval(() => setTick((t) => t + 1), 20000);
     return () => {
-      socket.off("orders:changed", load);
+      socket.off("orders:changed", refresh);
+      socket.off("visit:checked-in", loadVisits);
+      socket.off("visit:checked-out", loadVisits);
+      socket.off("menu:updated", loadMenu);
       clearInterval(timer);
     };
-  }, [signedIn]);
+  }, []);
 
-  if (!signedIn) {
-    return (
-      <div style={{ padding: 24, fontFamily: "sans-serif" }}>
-        <h1>Kitchen</h1>
-        <p>Not signed in. <a href="/">Open the register</a> on this terminal first, then come back to /kitchen.</p>
-      </div>
-    );
-  }
-
-  const setStatus = async (orderId: number, status: string) => {
-    await authFetch(`/orders/${orderId}/status`, {
+  const advance = async (order: KitchenOrder, status: string) => {
+    await authFetch(`/orders/${order.id}/status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
     });
+    loadOrders();
   };
 
   const dismissCanceled = async (itemId: number) => {
     await authFetch(`/order-items/${itemId}`, { method: "DELETE" });
+    loadOrders();
   };
 
+  const closeComposer = () => {
+    setComposerOpen(false);
+    setGuestQuery("");
+    setGuestVisitId(null);
+    setCart({});
+  };
+
+  const bump = (item: { id: number; name: string; price: number }, delta: number) => {
+    setCart((prev) => {
+      const next = { ...prev };
+      const line = next[item.id];
+      const qty = (line?.qty ?? 0) + delta;
+      if (qty <= 0) delete next[item.id];
+      else next[item.id] = { qty, note: line?.note ?? "", name: item.name, price: item.price };
+      return next;
+    });
+  };
+
+  const setNote = (id: number, note: string) => {
+    setCart((prev) => {
+      const line = prev[id];
+      if (!line) return prev;
+      return { ...prev, [id]: { ...line, note } };
+    });
+  };
+
+  const submitOrder = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!guestVisitId || cartLines.length === 0) return;
+    const items = cartLines.flatMap((line) =>
+      Array.from({ length: line.qty }, () => ({
+        name: line.name,
+        amount: line.price,
+        isKitchen: true,
+        visitCredits: 0,
+        note: line.note,
+      }))
+    );
+    const res = await authFetch(`/visits/${guestVisitId}/confirm-order`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+      return;
+    }
+    closeComposer();
+    loadOrders();
+  };
+
+  const cartLines = Object.values(cart);
+  const cartQty = cartLines.reduce((n, l) => n + l.qty, 0);
+  const cartTotal = cartLines.reduce((sum, l) => sum + l.price * l.qty, 0);
+
+  const chosen = visits.find((v) => v.id === guestVisitId) ?? null;
+  const gq = guestQuery.trim().toLowerCase();
+  const guestResults = gq
+    ? visits.filter((v) =>
+        `${v.customer.firstName} ${v.customer.lastName} ${v.locker.number}`.toLowerCase().includes(gq)
+      ).slice(0, 6)
+    : [];
+
+  const kitchenCategories = categories.filter((c) => c.isKitchen);
+  const now = new Date();
+
   return (
-    <div style={{ padding: 24, fontFamily: "sans-serif" }}>
-      <h1>Kitchen — {orders.length} open order{orders.length === 1 ? "" : "s"}</h1>
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+    <div style={{ background: "#f4efe7", minHeight: "100vh", position: "relative" }}>
+      {/* header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 26px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>Kitchen</div>
+            <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600 }}>
+              {now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+              {" · "}
+              {now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, background: "#f0ebe1", padding: "6px 12px", borderRadius: 20 }}>
+            <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#5f7a5a", animation: "pulseDot 1.8s ease-in-out infinite" }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#6b6152" }}>
+              Live · {orders.length} open order{orders.length === 1 ? "" : "s"}
+            </span>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600 }}>On shift</div>
+            <div style={{ display: "flex" }}>
+              {roster.map((s) => (
+                <div
+                  key={s.username}
+                  title={`${s.displayName} · ${s.role === "ADMIN" ? "Admin" : "Staff"}`}
+                  style={{ width: 28, height: 28, borderRadius: "50%", background: "#efe7d9", border: "2px solid #fffdf9", marginLeft: -5, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: "#7a6a53" }}
+                >
+                  {nameInitials(s.displayName)}
+                </div>
+              ))}
+            </div>
+          </div>
+          <button
+            onClick={() => setComposerOpen(true)}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 20px", border: "none", borderRadius: 11, background: "#7a6a53", color: "#fff", fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: "pointer", boxShadow: "0 8px 18px -10px rgba(122,106,83,.85)" }}
+          >
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <line x1="7.5" y1="3" x2="7.5" y2="12" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
+              <line x1="3" y1="7.5" x2="12" y2="7.5" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+            New Order
+          </button>
+        </div>
+      </div>
+
+      {/* board */}
+      <div style={{ padding: "22px 26px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18, alignItems: "start" }}>
         {COLUMNS.map((col) => {
-          const colOrders = orders.filter((o) => o.status === col.status);
+          const cards = orders.filter((o) => o.status === col.status);
           return (
-            <div key={col.status} style={{ flex: 1, background: "#f4f4f4", padding: 12, borderRadius: 8 }}>
-              <h2>{col.title} ({colOrders.length})</h2>
-              {colOrders.map((o) => {
-                const activeItems = o.items.filter((i) => !i.canceled);
-                const canceledItems = o.items.filter((i) => i.canceled);
-                return (
-                  <div key={o.id} style={{ background: "white", padding: 12, borderRadius: 8, marginBottom: 12 }}>
-                    <strong>{o.visit.customer.firstName} {o.visit.customer.lastName}</strong>
-                    {" — "}{o.visit.locker.number}
-                    <span style={{ float: "right", color: "#666" }}>{minutesAgo(o.createdAt)} min</span>
-                    <ul>
-                      {groupItems(activeItems).map((g) => (
-                        <li key={g.name}>{g.name} x{g.count}</li>
-                      ))}
-                      {canceledItems.map((item) => (
-                        <li key={item.id} style={{ color: "#c00" }}>
-                          <s>{item.name}</s> — <strong>ORDER CANCELED</strong>{" "}
-                          <button onClick={() => dismissCanceled(item.id)}>Remove</button>
-                        </li>
-                      ))}
-                    </ul>
-                    {activeItems.length > 0 && (
-                      <button onClick={() => setStatus(o.id, col.next)} style={{ width: "100%" }}>
-                        {col.action}
-                      </button>
-                    )}
+            <div key={col.status} style={{ background: "#efe9df", border: "1px solid rgba(43,38,32,.06)", borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", gap: 12, minHeight: 520 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 4px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <div style={{ width: 9, height: 9, borderRadius: "50%", background: col.dot }} />
+                  <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1.8, textTransform: "uppercase", color: "#6b6152" }}>
+                    {col.label}
+                  </span>
+                </div>
+                <div style={{ minWidth: 24, textAlign: "center", fontSize: 12, fontWeight: 800, color: "#6b6152", background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", padding: "2px 9px", borderRadius: 20 }}>
+                  {cards.length}
+                </div>
+              </div>
+
+              <div className="k-col" style={{ display: "flex", flexDirection: "column", gap: 11, overflowY: "auto", maxHeight: 560 }}>
+                {cards.map((order) => {
+                  const mins = minutesSince(order.createdAt);
+                  const late = mins >= 15;
+                  const active = order.items.filter((i) => !i.canceled);
+                  const canceled = order.items.filter((i) => i.canceled);
+                  const notes = order.visit.customer.notes;
+                  return (
+                    <div key={order.id} style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 14, padding: 15, boxShadow: "0 1px 2px rgba(43,38,32,.04)" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.2 }}>
+                            {order.visit.customer.firstName} {order.visit.customer.lastName}
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
+                            <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                              <path d="M5.5 1C3.6 1 2 2.5 2 4.4c0 2.4 3.5 5.6 3.5 5.6S9 6.8 9 4.4C9 2.5 7.4 1 5.5 1z" stroke="#a89a86" strokeWidth="1.3" />
+                              <circle cx="5.5" cy="4.3" r="1.1" fill="#a89a86" />
+                            </svg>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>{order.visit.locker.number}</span>
+                          </div>
+                        </div>
+                        <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: late ? "#8f3f28" : "#a89a86", background: late ? "#f7e4dc" : "#f0ebe1", padding: "4px 9px", borderRadius: 20 }}>
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                            <circle cx="5" cy="5" r="4" stroke="currentColor" strokeWidth="1.3" />
+                            <path d="M5 2.6V5l1.6 1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          {mins} min
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
+                        {groupOrderItems(active).map((row) => (
+                          <div key={row.key}>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                              <span style={{ flex: "none", minWidth: 22, fontSize: 14, fontWeight: 800, color: "#7a6a53" }}>
+                                {row.count}×
+                              </span>
+                              <span style={{ fontSize: 14, fontWeight: 600 }}>{row.name}</span>
+                            </div>
+                            {row.note && (
+                              <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600, marginLeft: 30 }}>{row.note}</div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {canceled.length > 0 && (
+                        <div style={{ marginTop: 11, background: "#f7e4dc", borderRadius: 10, padding: "9px 11px" }}>
+                          <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: "#8f3f28", marginBottom: 6 }}>
+                            Order canceled
+                          </div>
+                          {canceled.map((item) => (
+                            <div key={item.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
+                              <span style={{ fontSize: 13, fontWeight: 600, color: "#8f3f28", textDecoration: "line-through" }}>
+                                {item.name}
+                              </span>
+                              <button
+                                onClick={() => dismissCanceled(item.id)}
+                                style={{ padding: "3px 10px", border: "1.5px solid #e8c3b4", borderRadius: 8, background: "#fffdf9", color: "#8f3f28", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {notes && (
+                        <div style={{ marginTop: 11, display: "flex", flexWrap: "wrap", gap: 7 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#8f3f28", background: "#f7e4dc", padding: "4px 10px", borderRadius: 20 }}>
+                            {notes.length > 40 ? `${notes.slice(0, 40)}…` : notes}
+                          </span>
+                        </div>
+                      )}
+
+                      {active.length > 0 && (
+                        <button
+                          onClick={() => advance(order, col.next)}
+                          style={{ marginTop: 13, width: "100%", padding: 11, border: col.border, borderRadius: 11, background: col.bg, color: col.ink, fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" }}
+                        >
+                          {col.action}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {cards.length === 0 && (
+                  <div style={{ textAlign: "center", padding: "26px 10px", fontSize: 13, fontWeight: 600, color: "#b8ab97" }}>
+                    Nothing here right now
                   </div>
-                );
-              })}
-              {colOrders.length === 0 && <p style={{ color: "#999" }}>Empty</p>}
+                )}
+              </div>
             </div>
           );
         })}
       </div>
+
+      {/* composer */}
+      {composerOpen && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(43,38,32,.42)", padding: 34, zIndex: 30, animation: "fadeIn .18s ease" }}>
+          <form
+            onSubmit={submitOrder}
+            style={{ width: 920, maxWidth: "100%", maxHeight: "100%", margin: "0 auto", background: "#f4efe7", borderRadius: 20, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 30px 70px -24px rgba(43,38,32,.7)", animation: "popIn .24s ease" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
+              <div style={{ fontSize: 16, fontWeight: 800 }}>New Order</div>
+              <div
+                onClick={closeComposer}
+                style={{ width: 32, height: 32, borderRadius: 9, background: "#f0ebe1", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <line x1="3" y1="3" x2="11" y2="11" stroke="#6b6152" strokeWidth="2" strokeLinecap="round" />
+                  <line x1="11" y1="3" x2="3" y2="11" stroke="#6b6152" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </div>
+            </div>
+
+            {/* guest */}
+            <div style={{ padding: "16px 24px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
+              <div style={{ ...LABEL, marginBottom: 9 }}>Guest</div>
+              {chosen ? (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#f3f0e6", border: "1.5px solid #7a6a53", borderRadius: 12, padding: "11px 15px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ width: 38, height: 38, borderRadius: "50%", background: "#efe7d9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 800, color: "#7a6a53" }}>
+                      {initials(chosen.customer.firstName, chosen.customer.lastName)}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 800 }}>
+                        {chosen.customer.firstName} {chosen.customer.lastName}
+                      </div>
+                      <div style={{ fontSize: 12, color: "#7a6a53", fontWeight: 700 }}>{chosen.locker.number}</div>
+                    </div>
+                  </div>
+                  <div
+                    onClick={() => { setGuestVisitId(null); setGuestQuery(""); }}
+                    style={{ fontSize: 12, fontWeight: 700, color: "#a89a86", cursor: "pointer", padding: "6px 10px", borderRadius: 9, background: "#fffdf9" }}
+                  >
+                    Change
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", gap: 11, background: "#f4efe7", border: "1.5px solid #d8cebc", borderRadius: 12, padding: "11px 15px" }}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <circle cx="6.8" cy="6.8" r="4.8" stroke="#a89a86" strokeWidth="1.8" />
+                      <line x1="10.3" y1="10.3" x2="14" y2="14" stroke="#a89a86" strokeWidth="1.8" strokeLinecap="round" />
+                    </svg>
+                    <input
+                      className="k-in"
+                      placeholder="Search guest by name or locker (e.g. Aiko or W-14)"
+                      value={guestQuery}
+                      onChange={(e) => setGuestQuery(e.target.value)}
+                    />
+                  </div>
+                  {guestResults.length > 0 && (
+                    <div style={{ marginTop: 9, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {guestResults.map((v) => (
+                        <div
+                          key={v.id}
+                          onClick={() => { setGuestVisitId(v.id); setGuestQuery(""); }}
+                          style={{ display: "flex", alignItems: "center", gap: 9, background: "#f4efe7", border: "1.5px solid #d8cebc", borderRadius: 11, padding: "8px 12px", cursor: "pointer" }}
+                        >
+                          <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#efe7d9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#7a6a53" }}>
+                            {initials(v.customer.firstName, v.customer.lastName)}
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+                              {v.customer.firstName} {v.customer.lastName}
+                            </div>
+                            <div style={{ fontSize: 11, color: "#a89a86", fontWeight: 700 }}>{v.locker.number}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {gq !== "" && guestResults.length === 0 && (
+                    <div style={{ marginTop: 9, fontSize: 13, fontWeight: 600, color: "#a89a86" }}>
+                      Nobody checked in matches “{guestQuery}”.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* menu */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
+              {kitchenCategories.map((category) => (
+                <div key={category.id}>
+                  <div style={{ ...LABEL, marginBottom: 11 }}>{category.name}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 11 }}>
+                    {category.items.map((item) => {
+                      const line = cart[item.id];
+                      const qty = line?.qty ?? 0;
+                      return (
+                        <div
+                          key={item.id}
+                          style={{ background: "#fffdf9", border: `1.5px solid ${qty > 0 ? "#7a6a53" : "rgba(43,38,32,.08)"}`, borderRadius: 13, padding: "13px 14px" }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.2 }}>{item.name}</div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#7a6a53", marginTop: 2 }}>{money(item.price)}</div>
+                          </div>
+                          <div style={{ marginTop: 11, display: "flex", alignItems: "center", gap: 12 }}>
+                            <div
+                              onClick={() => bump(item, -1)}
+                              style={{ width: 30, height: 30, flex: "none", borderRadius: 9, border: "1.5px solid #d8cebc", background: "#fffdf9", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#6b6152", fontSize: 18, fontWeight: 800, lineHeight: 1 }}
+                            >
+                              −
+                            </div>
+                            <div style={{ minWidth: 20, textAlign: "center", fontSize: 16, fontWeight: 800, color: qty > 0 ? "#7a6a53" : "#c8b9a0" }}>
+                              {qty}
+                            </div>
+                            <div
+                              onClick={() => bump(item, 1)}
+                              style={{ width: 30, height: 30, flex: "none", borderRadius: 9, border: "1.5px solid #d8cebc", background: "#fffdf9", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#6b6152", fontSize: 18, fontWeight: 800, lineHeight: 1 }}
+                            >
+                              +
+                            </div>
+                          </div>
+                          {qty > 0 && (
+                            <div style={{ marginTop: 10, background: "#f4efe7", borderRadius: 9, padding: "8px 11px" }}>
+                              <input
+                                className="k-in"
+                                style={{ fontSize: 13 }}
+                                placeholder="Add a note (temp, allergy, prep…)"
+                                value={line?.note ?? ""}
+                                onChange={(e) => setNote(item.id, e.target.value)}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {category.items.length === 0 && (
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#a89a86" }}>Nothing in this category yet.</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {kitchenCategories.length === 0 && (
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: "#a89a86" }}>
+                  No kitchen categories yet — mark a category as “kitchen” on the Menu page first.
+                </div>
+              )}
+            </div>
+
+            {/* footer */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 24px", background: "#fffdf9", borderTop: "1px solid rgba(43,38,32,.08)" }}>
+              <div>
+                <div style={LABEL}>This order</div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#6b6152", marginTop: 2 }}>
+                  {cartQty === 0 ? "No items yet" : `${cartQty} item${cartQty === 1 ? "" : "s"}`}
+                  {" · "}
+                  <span style={{ fontWeight: 800, color: "#2b2620" }}>{money(cartTotal)}</span>
+                </div>
+              </div>
+              <button
+                type="submit"
+                disabled={!chosen || cartQty === 0}
+                style={{ padding: "15px 30px", border: "none", borderRadius: 13, background: chosen && cartQty > 0 ? "#7a6a53" : "#d8cebc", color: chosen && cartQty > 0 ? "#fff" : "#fffdf9", fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: chosen && cartQty > 0 ? "pointer" : "not-allowed" }}
+              >
+                Submit to Queue
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

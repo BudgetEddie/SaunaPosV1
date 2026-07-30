@@ -518,7 +518,9 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
         order = await tx.order.create({ data: { visitId } });
       }
       for (const it of kitchenItems) {
-        await tx.orderItem.create({ data: { orderId: order.id, name: it.name } });
+        await tx.orderItem.create({
+          data: { orderId: order.id, name: it.name, note: it.note || null },
+        });
       }
     }
 

@@ -122,6 +122,7 @@ model OrderItem {
   orderId  Int
   order    Order   @relation(fields: [orderId], references: [id])
   name     String
+  note     String?
   canceled Boolean @default(false)
 }
 

@@ -37,7 +37,7 @@ export type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 export type Order = {
   id: number;
   status: string;
-  items: { id: number; name: string; canceled: boolean }[];
+  items: { id: number; name: string; note: string | null; canceled: boolean }[];
 };
 
 export type Visit = {
