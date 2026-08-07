@@ -57,8 +57,11 @@ type BillData = {
   visit: {
     checkInAt: string;
     redeemsPass: boolean;
-    customer: { firstName: string; lastName: string };
-    locker: { number: string };
+    kind: string;
+    takeoutNumber: number | null;
+    takeoutName: string | null;
+    customer: { firstName: string; lastName: string } | null;
+    locker: { number: string } | null;
   };
 };
 
@@ -131,8 +134,17 @@ function Receipt() {
 
       <div style={dashed} />
       <Row left={`Receipt #${bill.id}`} right={new Date(when).toLocaleDateString()} />
-      <Row left={new Date(when).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} right={`Locker ${bill.visit.locker.number}`} />
-      <Row left="Guest" right={`${bill.visit.customer.firstName} ${bill.visit.customer.lastName}`} />
+      <Row
+        left={new Date(when).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+        right={bill.visit.locker ? `Locker ${bill.visit.locker.number}` : `Takeout #${bill.visit.takeoutNumber ?? "?"}`}
+      />
+      {/* A staying guest is named; a takeout customer usually isn't, and a
+          receipt shouldn't invent one. The line is simply left off. */}
+      {bill.visit.customer ? (
+        <Row left="Guest" right={`${bill.visit.customer.firstName} ${bill.visit.customer.lastName}`} />
+      ) : bill.visit.takeoutName ? (
+        <Row left="Name" right={bill.visit.takeoutName} />
+      ) : null}
 
       <div style={dashed} />
       {/* Every charge, one per line. A "*" marks the entry fee — the footnote

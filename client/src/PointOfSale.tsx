@@ -83,6 +83,199 @@ const BTN_GHOST: React.CSSProperties = {
   color: "#5f5340", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer",
 };
 
+// ---------------------------------------------------------------------------
+// The two halves of an order screen, pulled out so the guest till and the
+// takeout counter can share them rather than drifting apart. Neither knows
+// which screen it's on: they take what to show and what to call when tapped,
+// and that's all.
+// ---------------------------------------------------------------------------
+
+// The left half — the category chips and the grid of tiles.
+function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmission, onPick }: {
+  categories: Category[];
+  activeCategoryId: number | null;
+  onCategory: (id: number | null) => void;
+  cart: Cart;
+  // The entry charge already on the tab, so the matching tile can say "applied".
+  // Always null on a takeout order — there's no admission to have applied.
+  currentAdmission: { description: string } | null;
+  onPick: (item: MenuItem, category: Category) => void;
+}) {
+  // Show every category, or just the one whose filter chip is selected.
+  const shownCategories = activeCategoryId === null
+    ? categories
+    : categories.filter((c) => c.id === activeCategoryId);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {[{ id: null as number | null, name: "All" }, ...categories].map((c) => {
+          const on = c.id === activeCategoryId;
+          return (
+            <div
+              key={c.id ?? "all"}
+              onClick={() => onCategory(c.id)}
+              style={{ padding: "9px 16px", borderRadius: 11, border: `1.5px solid ${on ? "#7a6a53" : "#d8cebc"}`, background: on ? "#7a6a53" : "#fffdf9", color: on ? "#fffdf9" : "#5f5340", fontSize: 13, fontWeight: 800, cursor: "pointer" }}
+            >
+              {c.name}
+            </div>
+          );
+        })}
+      </div>
+
+      {shownCategories.map((category) => (
+        <div key={category.id} style={{ ...PANEL, padding: "16px 18px" }}>
+          <div style={{ ...LABEL, marginBottom: 12 }}>
+            {category.name}
+            {category.isAdmission && (
+              <span style={{ color: "#b8ab97", letterSpacing: .6, marginLeft: 8 }}>
+                · swaps the entry charge
+              </span>
+            )}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+            {/* Only items marked available — that's the "86 it" switch
+                on the Menu screen, for when the kitchen runs out. */}
+            {category.items.filter((item) => item.available).map((item) => {
+              const isSwap = category.isAdmission && item.visitCredits === 0;
+              const qty = cart[`m${item.id}`]?.qty ?? 0;
+              // An entry charge is matched by NAME, since the tab stores
+              // the description rather than a link back to the menu.
+              const applied = isSwap && currentAdmission?.description === item.name;
+              // A tile is highlighted either because it's in the cart or
+              // because it's the entry charge already on the tab.
+              const lit = qty > 0 || applied;
+              return (
+                <div
+                  key={item.id}
+                  className="pos-tile"
+                  onClick={() => onPick(item, category)}
+                  title={item.description ?? ""}
+                  style={{ border: `1.5px solid ${lit ? "#7a6a53" : "rgba(43,38,32,.09)"}`, background: lit ? "#f7f3ea" : "#fffdf9", borderRadius: 13, padding: "12px 13px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6, minHeight: 80, justifyContent: "space-between" }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                    {item.imageData && (
+                      <img src={item.imageData} alt="" style={{ width: 34, height: 34, flex: "none", borderRadius: 8, objectFit: "cover" }} />
+                    )}
+                    <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25 }}>{item.name}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 800, color: "#7a6a53" }}>{money(item.price)}</span>
+                    {qty > 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: "#7a6a53", borderRadius: 20, padding: "2px 9px" }}>
+                        {qty}
+                      </span>
+                    )}
+                    {applied && (
+                      <span style={{ fontSize: 10.5, fontWeight: 800, color: "#3f5540", background: "#dfeada", borderRadius: 20, padding: "2px 9px" }}>
+                        applied
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {category.items.length === 0 && (
+              <div style={{ fontSize: 13, color: "#a89a86", fontWeight: 600 }}>Nothing in this category yet.</div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The right half — the running cart, its quantity steppers and its totals.
+// Everything BELOW the total line is passed in as `children`, because that's the
+// only part the two screens disagree about: the guest till adds to a tab and
+// walks to checkout, the takeout counter takes the money there and then.
+function CartPanel({ lines, onBump, onNote, onClear, subtotal, tax, children }: {
+  lines: CartLine[];
+  onBump: (line: Omit<CartLine, "qty">, delta: number) => void;
+  onNote: (id: string, note: string) => void;
+  onClear: () => void;
+  subtotal: number;
+  tax: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div style={{ ...PANEL, overflow: "hidden", position: "sticky", top: 20 }}>
+      <div style={{ padding: "15px 18px", borderBottom: "1px solid rgba(43,38,32,.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={LABEL}>This order</div>
+        {lines.length > 0 && (
+          <div onClick={onClear} style={{ fontSize: 11.5, fontWeight: 700, color: "#a89a86", cursor: "pointer" }}>
+            Clear
+          </div>
+        )}
+      </div>
+
+      {lines.length === 0 && (
+        <div style={{ padding: "30px 20px", textAlign: "center", fontSize: 13.5, fontWeight: 600, color: "#b8ab97" }}>
+          Tap menu items to build the order.
+        </div>
+      )}
+
+      {lines.map((line) => (
+        <div key={line.id} style={{ padding: "11px 16px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{line.name}</div>
+              <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
+                {money(line.price)} each{line.isKitchen ? " · kitchen" : ""}
+                {line.visitCredits > 0 ? ` · +${line.visitCredits} passes` : ""}
+              </div>
+            </div>
+            <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 7 }}>
+              <div
+                onClick={() => onBump(line, -1)}
+                style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
+              >
+                −
+              </div>
+              <div style={{ minWidth: 16, textAlign: "center", fontSize: 13.5, fontWeight: 800 }}>{line.qty}</div>
+              <div
+                onClick={() => onBump(line, 1)}
+                style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
+              >
+                +
+              </div>
+            </div>
+            <div style={{ flex: "none", width: 56, textAlign: "right", fontSize: 13.5, fontWeight: 800 }}>
+              {money(line.price * line.qty)}
+            </div>
+          </div>
+          {/* Only food and drink get a note box — there's nothing to
+              tell the kitchen about a towel. The note travels with the
+              item onto the ticket. */}
+          {line.isKitchen && (
+            <input
+              className="cd-in"
+              placeholder="Note for the kitchen (temp, allergy, prep…)"
+              value={line.note}
+              onChange={(e) => onNote(line.id, e.target.value)}
+              style={{ marginTop: 8, fontSize: 12.5 }}
+            />
+          )}
+        </div>
+      ))}
+
+      <div style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
+          <span>Subtotal</span><span>{money(subtotal)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
+          <span>Tax</span><span>{money(tax)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, paddingTop: 8, borderTop: "1px solid rgba(43,38,32,.08)" }}>
+          <span>Order total</span><span>{money(subtotal + tax)}</span>
+        </div>
+
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function money(n: number) {
   return `$${n.toFixed(2)}`;
 }
@@ -164,6 +357,14 @@ function PointOfSale() {
   const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
   const [justAdded, setJustAdded] = useState(false);        // the green "Added ✓" flash
   const [customOpen, setCustomOpen] = useState(false);      // the custom-charge form
+  // ---- takeout ----
+  // `takeoutOpen` is a fourth state for this screen, alongside the guest grid,
+  // a guest's order screen and checkout. `done` holds the just-finished sale so
+  // the counter can read the ticket number out loud before clearing it.
+  const [takeoutOpen, setTakeoutOpen] = useState(false);
+  const [takeoutName, setTakeoutName] = useState("");
+  const [takeoutPaying, setTakeoutPaying] = useState(false);
+  const [takeoutDone, setTakeoutDone] = useState<{ number: number; total: number } | null>(null);
   const [customName, setCustomName] = useState("");
   const [customAmount, setCustomAmount] = useState("");
   const [newLockerId, setNewLockerId] = useState("");       // chosen in "Move locker…"
@@ -257,6 +458,25 @@ function PointOfSale() {
     return res.ok;
   };
 
+  // Start a takeout order. Same clearing as opening a guest — a cart left over
+  // from the last person must never turn into somebody else's charges.
+  const openTakeout = () => {
+    setSelectedVisitId(null);
+    setTakeoutOpen(true);
+    setCart({});
+    setActiveCategoryId(null);
+    setTakeoutName("");
+    setTakeoutDone(null);
+    setCustomOpen(false);
+  };
+
+  const closeTakeout = () => {
+    setTakeoutOpen(false);
+    setCart({});
+    setTakeoutName("");
+    setTakeoutDone(null);
+  };
+
   // Open a guest's order screen with everything from the last one cleared —
   // an abandoned cart must never follow staff onto the next person's tab.
   const openGuest = (id: number) => {
@@ -308,6 +528,8 @@ function PointOfSale() {
     // Pass packs live inside the Visit category but are ordinary sales — this
     // check has to come first, or selling one would overwrite the entry charge.
     if (item.visitCredits === 0 && category.isAdmission) {
+      // No guest open means we're on the takeout screen, where admission tiles
+      // aren't shown at all. Belt and braces.
       if (!selected) return;
       await showError(await authFetch(`/visits/${selected.id}/set-admission`, {
         method: "POST",
@@ -384,6 +606,49 @@ function PointOfSale() {
     loadVisits();
   };
 
+  // THE TAKEOUT SALE. Everything happens in this one request: the visit, the
+  // bill, the charges, the kitchen ticket and the payment.
+  //
+  // ⚠ The object built below goes straight into JSON.stringify, so TYPESCRIPT
+  // DOES NOT CHECK IT. This is the third place in the app with that hazard —
+  // confirmOrder here and submitOrder in Kitchen.tsx are the other two, and a
+  // missing `taxRate` in one of them is how every charge once got saved at 0%
+  // tax. If you ever add a field to a charge, add it in all three by eye. A
+  // clean Problems panel proves nothing about these three objects.
+  const payTakeout = async (paymentMethod: string) => {
+    if (cartLines.length === 0 || takeoutPaying) return;
+    setTakeoutPaying(true);
+    // Same fan-out as the till: "Tea ×3" becomes three separate entries.
+    const items = cartLines.flatMap((line) =>
+      Array.from({ length: line.qty }, () => ({
+        name: line.name,
+        amount: line.price,
+        isKitchen: line.isKitchen,
+        visitCredits: line.visitCredits,
+        taxRate: line.taxRate,
+        note: line.note,
+      }))
+    );
+    // Read the total BEFORE clearing the cart — it's what the receipt line on
+    // the confirmation panel shows.
+    const total = cartSubtotal + cartTax;
+    const res = await authFetch(`/takeout`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items, paymentMethod, name: takeoutName }),
+    });
+    setTakeoutPaying(false);
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+      return;
+    }
+    const { visit } = await res.json();
+    setTakeoutDone({ number: visit.takeoutNumber, total });
+    setCart({});
+    setTakeoutName("");
+  };
+
   // Move a guest to a different locker mid-visit. The server frees the old one
   // and claims the new one together, so a crash can't leave both occupied.
   const changeLocker = async () => {
@@ -451,9 +716,19 @@ function PointOfSale() {
           {now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
         </div>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 9, background: "#eef4ea", border: "1px solid #cfe0c8", borderRadius: 20, padding: "6px 13px" }}>
-        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#5f7a5a" }} />
-        <span style={{ fontSize: 12, fontWeight: 800, color: "#3f5540" }}>{visits.length} checked in</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, background: "#eef4ea", border: "1px solid #cfe0c8", borderRadius: 20, padding: "6px 13px" }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#5f7a5a" }} />
+          <span style={{ fontSize: 12, fontWeight: 800, color: "#3f5540" }}>{visits.length} checked in</span>
+        </div>
+        {!takeoutOpen && !selected && (
+          <button
+            onClick={openTakeout}
+            style={{ padding: "10px 18px", border: "none", borderRadius: 11, background: "#7a6a53", color: "#fffdf9", fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" }}
+          >
+            Takeout order
+          </button>
+        )}
       </div>
     </div>
   );
@@ -534,6 +809,98 @@ function PointOfSale() {
   );
 
   // ---------------------------------------------------------------------------
+  // VIEW 3 — takeout. The same board and cart as a guest's order screen, but
+  // paid on the spot instead of added to a tab.
+  //
+  // Admission categories are filtered out entirely. That removes both the entry
+  // charges (a takeout customer isn't coming in) and the pass packs that live
+  // inside those categories (there's no profile to credit them to). The server
+  // refuses pass packs too — this just means staff never see a tile that would
+  // be rejected.
+  // ---------------------------------------------------------------------------
+  const takeoutView = !takeoutOpen ? null : (
+    <div style={{ padding: "18px 26px 26px", display: "flex", flexDirection: "column", gap: 14 }}>
+      <div
+        onClick={closeTakeout}
+        style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 700, color: "#7a6a53", cursor: "pointer", width: "fit-content" }}
+      >
+        ← Back to guests
+      </div>
+
+      {/* The confirmation panel. It replaces the whole screen after payment so
+          the number is impossible to miss, and it's the only way back out —
+          which stops staff wandering off before reading it to the customer. */}
+      {takeoutDone ? (
+        <div style={{ ...PANEL, padding: "44px 30px", textAlign: "center" }}>
+          <div style={{ ...LABEL, color: "#5f7a5a" }}>Paid · {money(takeoutDone.total)}</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#6b6152", marginTop: 18 }}>Order number</div>
+          <div style={{ fontSize: 76, fontWeight: 800, lineHeight: 1, color: "#7a6a53", marginTop: 6 }}>
+            {takeoutDone.number}
+          </div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: "#a89a86", marginTop: 14 }}>
+            On the kitchen board now. Give this number to the customer.
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 26 }}>
+            <button
+              onClick={openTakeout}
+              style={{ padding: "13px 26px", border: "none", borderRadius: 12, background: "#7a6a53", color: "#fffdf9", fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: "pointer" }}
+            >
+              Another takeout order
+            </button>
+            <button onClick={closeTakeout} style={BTN_GHOST}>Done</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 330px", gap: 16, alignItems: "start" }}>
+          <MenuBoard
+            categories={categories.filter((c) => !c.isAdmission)}
+            activeCategoryId={activeCategoryId}
+            onCategory={setActiveCategoryId}
+            cart={cart}
+            currentAdmission={null}
+            onPick={pickItem}
+          />
+
+          <CartPanel
+            lines={cartLines}
+            onBump={bump}
+            onNote={setCartNote}
+            onClear={() => setCart({})}
+            subtotal={cartSubtotal}
+            tax={cartTax}
+          >
+            <input
+              className="cd-in"
+              placeholder="Name for the order (optional)"
+              value={takeoutName}
+              onChange={(e) => setTakeoutName(e.target.value)}
+              style={{ marginTop: 4 }}
+            />
+            <div style={{ fontSize: 11.5, fontWeight: 600, color: "#b8ab97", marginTop: -2 }}>
+              Printed on the ticket next to the order number.
+            </div>
+
+            {/* No "add to tab" here — paying IS confirming. The kitchen hears
+                nothing until one of these is pressed. */}
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              {["CASH", "CARD"].map((m) => (
+                <button
+                  key={m}
+                  onClick={() => payTakeout(m)}
+                  disabled={cartLines.length === 0 || takeoutPaying}
+                  style={{ flex: 1, padding: 14, border: "none", borderRadius: 12, fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: cartLines.length === 0 || takeoutPaying ? "default" : "pointer", background: cartLines.length > 0 && !takeoutPaying ? "#7a6a53" : "#e2dacb", color: cartLines.length > 0 && !takeoutPaying ? "#fff" : "#b8ab97" }}
+                >
+                  {takeoutPaying ? "…" : m === "CASH" ? "Pay cash" : "Pay card"}
+                </button>
+              ))}
+            </div>
+          </CartPanel>
+        </div>
+      )}
+    </div>
+  );
+
+  // ---------------------------------------------------------------------------
   // VIEW 2 — one guest's order screen: menu on the left, cart on the right.
   // ---------------------------------------------------------------------------
   const orderView = !selected ? null : (() => {
@@ -542,10 +909,6 @@ function PointOfSale() {
     // Which entry charge is currently on their tab — used to put the "applied"
     // badge on the matching admission tile.
     const currentAdmission = visit.bill.lineItems.find((li) => li.isAdmission) ?? null;
-    // Show every category, or just the one whose filter chip is selected.
-    const shownCategories = activeCategoryId === null
-      ? categories
-      : categories.filter((c) => c.id === activeCategoryId);
     // Only free lockers from this guest's own pool can be moved into.
     const availableLockers = lockers.filter(
       (l) => l.gender === visit.customer.gender && l.status === "AVAILABLE"
@@ -597,192 +960,61 @@ function PointOfSale() {
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 330px", gap: 16, alignItems: "start" }}>
           {/* menu */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {[{ id: null as number | null, name: "All" }, ...categories].map((c) => {
-                const on = c.id === activeCategoryId;
-                return (
-                  <div
-                    key={c.id ?? "all"}
-                    onClick={() => setActiveCategoryId(c.id)}
-                    style={{ padding: "9px 16px", borderRadius: 11, border: `1.5px solid ${on ? "#7a6a53" : "#d8cebc"}`, background: on ? "#7a6a53" : "#fffdf9", color: on ? "#fffdf9" : "#5f5340", fontSize: 13, fontWeight: 800, cursor: "pointer" }}
-                  >
-                    {c.name}
-                  </div>
-                );
-              })}
-            </div>
-
-            {shownCategories.map((category) => (
-              <div key={category.id} style={{ ...PANEL, padding: "16px 18px" }}>
-                <div style={{ ...LABEL, marginBottom: 12 }}>
-                  {category.name}
-                  {category.isAdmission && (
-                    <span style={{ color: "#b8ab97", letterSpacing: .6, marginLeft: 8 }}>
-                      · swaps the entry charge
-                    </span>
-                  )}
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-                  {/* Only items marked available — that's the "86 it" switch
-                      on the Menu screen, for when the kitchen runs out. */}
-                  {category.items.filter((item) => item.available).map((item) => {
-                    const isSwap = category.isAdmission && item.visitCredits === 0;
-                    const qty = cart[`m${item.id}`]?.qty ?? 0;
-                    // An entry charge is matched by NAME, since the tab stores
-                    // the description rather than a link back to the menu.
-                    const applied = isSwap && currentAdmission?.description === item.name;
-                    // A tile is highlighted either because it's in the cart or
-                    // because it's the entry charge already on the tab.
-                    const lit = qty > 0 || applied;
-                    return (
-                      <div
-                        key={item.id}
-                        className="pos-tile"
-                        onClick={() => pickItem(item, category)}
-                        title={item.description ?? ""}
-                        style={{ border: `1.5px solid ${lit ? "#7a6a53" : "rgba(43,38,32,.09)"}`, background: lit ? "#f7f3ea" : "#fffdf9", borderRadius: 13, padding: "12px 13px", cursor: "pointer", display: "flex", flexDirection: "column", gap: 6, minHeight: 80, justifyContent: "space-between" }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                          {item.imageData && (
-                            <img src={item.imageData} alt="" style={{ width: 34, height: 34, flex: "none", borderRadius: 8, objectFit: "cover" }} />
-                          )}
-                          <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25 }}>{item.name}</div>
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 13, fontWeight: 800, color: "#7a6a53" }}>{money(item.price)}</span>
-                          {qty > 0 && (
-                            <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: "#7a6a53", borderRadius: 20, padding: "2px 9px" }}>
-                              {qty}
-                            </span>
-                          )}
-                          {applied && (
-                            <span style={{ fontSize: 10.5, fontWeight: 800, color: "#3f5540", background: "#dfeada", borderRadius: 20, padding: "2px 9px" }}>
-                              applied
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {category.items.length === 0 && (
-                    <div style={{ fontSize: 13, color: "#a89a86", fontWeight: 600 }}>Nothing in this category yet.</div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+          <MenuBoard
+            categories={categories}
+            activeCategoryId={activeCategoryId}
+            onCategory={setActiveCategoryId}
+            cart={cart}
+            currentAdmission={currentAdmission}
+            onPick={pickItem}
+          />
 
           {/* cart */}
-          <div style={{ ...PANEL, overflow: "hidden", position: "sticky", top: 20 }}>
-            <div style={{ padding: "15px 18px", borderBottom: "1px solid rgba(43,38,32,.07)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={LABEL}>This order</div>
-              {cartLines.length > 0 && (
-                <div onClick={() => setCart({})} style={{ fontSize: 11.5, fontWeight: 700, color: "#a89a86", cursor: "pointer" }}>
-                  Clear
-                </div>
-              )}
-            </div>
+          <CartPanel
+            lines={cartLines}
+            onBump={bump}
+            onNote={setCartNote}
+            onClear={() => setCart({})}
+            subtotal={cartSubtotal}
+            tax={cartTax}
+          >
+            <button
+              onClick={confirmOrder}
+              disabled={cartLines.length === 0}
+              style={{ marginTop: 8, textAlign: "center", padding: 14, border: "none", borderRadius: 12, fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: cartLines.length === 0 ? "default" : "pointer", background: justAdded ? "#5f7a5a" : cartLines.length > 0 ? "#7a6a53" : "#e2dacb", color: justAdded || cartLines.length > 0 ? "#fff" : "#b8ab97" }}
+            >
+              {justAdded
+                ? "Added to tab ✓"
+                : cartLines.length > 0
+                  ? `Add ${cartCount} item${cartCount === 1 ? "" : "s"} to tab`
+                  : "Add to tab"}
+            </button>
 
-            {cartLines.length === 0 && (
-              <div style={{ padding: "30px 20px", textAlign: "center", fontSize: 13.5, fontWeight: 600, color: "#b8ab97" }}>
-                Tap menu items to build the order.
+            {customOpen ? (
+              <form onSubmit={addCustomCharge} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <input className="cd-in" placeholder="Custom charge" value={customName} onChange={(e) => setCustomName(e.target.value)} />
+                <input className="cd-in" placeholder="Amount" type="number" step="0.01" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button type="submit" style={{ ...BTN_GHOST, flex: 1 }}>Add to order</button>
+                  <button type="button" onClick={() => setCustomOpen(false)} style={BTN_GHOST}>Cancel</button>
+                </div>
+              </form>
+            ) : (
+              <div
+                onClick={() => setCustomOpen(true)}
+                style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#a89a86", cursor: "pointer" }}
+              >
+                + Custom charge
               </div>
             )}
 
-            {cartLines.map((line) => (
-              <div key={line.id} style={{ padding: "11px 16px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{line.name}</div>
-                    <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
-                      {money(line.price)} each{line.isKitchen ? " · kitchen" : ""}
-                      {line.visitCredits > 0 ? ` · +${line.visitCredits} passes` : ""}
-                    </div>
-                  </div>
-                  <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 7 }}>
-                    <div
-                      onClick={() => bump(line, -1)}
-                      style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
-                    >
-                      −
-                    </div>
-                    <div style={{ minWidth: 16, textAlign: "center", fontSize: 13.5, fontWeight: 800 }}>{line.qty}</div>
-                    <div
-                      onClick={() => bump(line, 1)}
-                      style={{ width: 24, height: 24, borderRadius: 7, border: "1.5px solid #d8cebc", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, color: "#7a6a53", cursor: "pointer", lineHeight: 1 }}
-                    >
-                      +
-                    </div>
-                  </div>
-                  <div style={{ flex: "none", width: 56, textAlign: "right", fontSize: 13.5, fontWeight: 800 }}>
-                    {money(line.price * line.qty)}
-                  </div>
-                </div>
-                {/* Only food and drink get a note box — there's nothing to
-                    tell the kitchen about a towel. The note travels with the
-                    item onto the ticket. */}
-                {line.isKitchen && (
-                  <input
-                    className="cd-in"
-                    placeholder="Note for the kitchen (temp, allergy, prep…)"
-                    value={line.note}
-                    onChange={(e) => setCartNote(line.id, e.target.value)}
-                    style={{ marginTop: 8, fontSize: 12.5 }}
-                  />
-                )}
-              </div>
-            ))}
-
-            <div style={{ padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
-                <span>Subtotal</span><span>{money(cartSubtotal)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
-                <span>Tax</span><span>{money(cartTax)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 16, fontWeight: 800, paddingTop: 8, borderTop: "1px solid rgba(43,38,32,.08)" }}>
-                <span>Order total</span><span>{money(cartSubtotal + cartTax)}</span>
-              </div>
-
-              <button
-                onClick={confirmOrder}
-                disabled={cartLines.length === 0}
-                style={{ marginTop: 8, textAlign: "center", padding: 14, border: "none", borderRadius: 12, fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: cartLines.length === 0 ? "default" : "pointer", background: justAdded ? "#5f7a5a" : cartLines.length > 0 ? "#7a6a53" : "#e2dacb", color: justAdded || cartLines.length > 0 ? "#fff" : "#b8ab97" }}
-              >
-                {justAdded
-                  ? "Added to tab ✓"
-                  : cartLines.length > 0
-                    ? `Add ${cartCount} item${cartCount === 1 ? "" : "s"} to tab`
-                    : "Add to tab"}
-              </button>
-
-              {customOpen ? (
-                <form onSubmit={addCustomCharge} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <input className="cd-in" placeholder="Custom charge" value={customName} onChange={(e) => setCustomName(e.target.value)} />
-                  <input className="cd-in" placeholder="Amount" type="number" step="0.01" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)} />
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button type="submit" style={{ ...BTN_GHOST, flex: 1 }}>Add to order</button>
-                    <button type="button" onClick={() => setCustomOpen(false)} style={BTN_GHOST}>Cancel</button>
-                  </div>
-                </form>
-              ) : (
-                <div
-                  onClick={() => setCustomOpen(true)}
-                  style={{ textAlign: "center", fontSize: 12.5, fontWeight: 700, color: "#a89a86", cursor: "pointer" }}
-                >
-                  + Custom charge
-                </div>
-              )}
-
-              <button
-                onClick={goToCheckout}
-                style={{ textAlign: "center", padding: 12, border: "1.5px solid #d8cebc", borderRadius: 12, background: "#fffdf9", color: "#5f5340", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
-              >
-                Go to checkout →
-              </button>
-            </div>
-          </div>
+            <button
+              onClick={goToCheckout}
+              style={{ textAlign: "center", padding: 12, border: "1.5px solid #d8cebc", borderRadius: 12, background: "#fffdf9", color: "#5f5340", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+            >
+              Go to checkout →
+            </button>
+          </CartPanel>
         </div>
       </div>
     );
@@ -793,7 +1025,7 @@ function PointOfSale() {
   return (
     <div style={{ background: "#f4efe7", minHeight: "100vh" }}>
       {header}
-      {selected ? orderView : listView}
+      {takeoutOpen ? takeoutView : selected ? orderView : listView}
     </div>
   );
 }

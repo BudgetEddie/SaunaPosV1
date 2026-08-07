@@ -85,6 +85,16 @@ enum PaymentMethod {
   VISIT_PASS
 }
 
+// What a Visit actually is. STAY is the normal thing: somebody in the building
+// with a locker, a tab, and a check-out still to come. TAKEOUT is a counter
+// sale to somebody who isn't staying — no locker, usually no profile, paid on
+// the spot. Both live in the same table because they share everything that
+// matters: a bill, charges, and kitchen tickets.
+enum VisitKind {
+  STAY
+  TAKEOUT
+}
+
 // The four stages of a kitchen ticket, in order. The Kitchen screen's three
 // columns are the first three; reaching COMPLETE removes the card.
 enum OrderStatus {
@@ -209,11 +219,23 @@ model Locker {
 // ONE PERSON'S STAY — the hub everything else hangs off. Created at check-in,
 // closed at check-out.
 model Visit {
-  id          Int       @id @default(autoincrement())
-  customerId  Int
-  customer    Customer  @relation(fields: [customerId], references: [id])
-  lockerId    Int
-  locker      Locker    @relation(fields: [lockerId], references: [id])
+  id            Int       @id @default(autoincrement())
+  // STAY or TAKEOUT. Defaulting to STAY is what makes every visit already in
+  // the database correct without touching a single row.
+  kind          VisitKind @default(STAY)
+  // Both of these are now optional, and the `?` is the whole feature. A takeout
+  // order has nobody signed in and no locker held. Every existing visit still
+  // has both — nothing is being taken away, the rule is just being relaxed.
+  customerId    Int?
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  lockerId      Int?
+  locker        Locker?   @relation(fields: [lockerId], references: [id])
+  // The ticket number called out at the counter — 1, 2, 3, starting again each
+  // morning. Only takeout has one; a staying guest is found by locker instead.
+  takeoutNumber Int?
+  // Optional, and purely so the counter can shout something friendlier than a
+  // number. "Dave", "blue jacket". Never used to identify anyone.
+  takeoutName   String?
   checkInAt   DateTime  @default(now())
   // Empty means they're still in the building. This one field is what every
   // "who's here now" query in the app looks at.

@@ -46,8 +46,14 @@ type KitchenOrder = {
   items: OrderItemRow[];
   visit: {
     id: number;
-    customer: { firstName: string; lastName: string; notes: string | null };
-    locker: { number: string };
+    // STAY or TAKEOUT. A takeout ticket has no customer and no locker — it's
+    // called out by number instead, and it's going in a bag rather than being
+    // carried to a bench.
+    kind: string;
+    takeoutNumber: number | null;
+    takeoutName: string | null;
+    customer: { firstName: string; lastName: string; notes: string | null } | null;
+    locker: { number: string } | null;
   };
 };
 type RosterEntry = { username: string; displayName: string; role: string };
@@ -84,6 +90,18 @@ function nameInitials(name: string) {
   const parts = name.trim().split(/\s+/);
   return initials(parts[0] ?? "", parts[1] ?? "");
 }
+
+// What to write at the top of a ticket. A guest gets their name; a takeout order
+// gets whatever the counter typed, or just "Takeout" if they typed nothing.
+function ticketName(visit: KitchenOrder["visit"]) {
+  if (visit.customer) return `${visit.customer.firstName} ${visit.customer.lastName}`;
+  return visit.takeoutName?.trim() || "Takeout";
+}
+// And the line under it — the locker to walk it to, or the number to call out.
+function ticketTag(visit: KitchenOrder["visit"]) {
+  return visit.locker ? visit.locker.number : `#${visit.takeoutNumber ?? "?"}`;
+}
+
 function minutesSince(iso: string) {
   return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
 }
@@ -330,20 +348,33 @@ function Kitchen() {
                   const canceled = order.items.filter((i) => i.canceled);
                   // Allergies and warnings from the guest's profile, surfaced
                   // here so the kitchen sees them without looking anyone up.
-                  const notes = order.visit.customer.notes;
+                  // Allergy warnings come off a profile, and takeout has none —
+                  // so a takeout ticket never shows one. Worth knowing at the
+                  // counter: if somebody mentions an allergy on a takeout order,
+                  // it has to go in the item's note box or it won't be seen.
+                  const notes = order.visit.customer?.notes ?? null;
                   return (
                     <div key={order.id} style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 14, padding: 15, boxShadow: "0 1px 2px rgba(43,38,32,.04)" }}>
                       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.2 }}>
-                            {order.visit.customer.firstName} {order.visit.customer.lastName}
+                          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                            <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.2 }}>
+                              {ticketName(order.visit)}
+                            </div>
+                            {/* The cook needs to know at a glance that this one
+                                goes in a bag on the counter, not out to a bench. */}
+                            {order.visit.kind === "TAKEOUT" && (
+                              <span style={{ flex: "none", fontSize: 9.5, fontWeight: 800, letterSpacing: 1, color: "#8f5340", background: "#f4e6dd", borderRadius: 20, padding: "2px 8px" }}>
+                                TAKEOUT
+                              </span>
+                            )}
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
                             <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
                               <path d="M5.5 1C3.6 1 2 2.5 2 4.4c0 2.4 3.5 5.6 3.5 5.6S9 6.8 9 4.4C9 2.5 7.4 1 5.5 1z" stroke="#a89a86" strokeWidth="1.3" />
                               <circle cx="5.5" cy="4.3" r="1.1" fill="#a89a86" />
                             </svg>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>{order.visit.locker.number}</span>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>{ticketTag(order.visit)}</span>
                           </div>
                         </div>
                         <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: late ? "#8f3f28" : "#a89a86", background: late ? "#f7e4dc" : "#f0ebe1", padding: "4px 9px", borderRadius: 20 }}>

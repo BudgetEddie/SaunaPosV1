@@ -546,7 +546,10 @@ app.post("/lockers", async (req, res) => {
 // live update arrives.
 app.get("/visits/active", async (_req, res) => {
   const visits = await prisma.visit.findMany({
-    where: { checkOutAt: null },
+    // Takeout orders are created already closed, so `checkOutAt` alone keeps
+    // them out. Naming the kind as well says so out loud, and would still hold
+    // if takeout ever learned to stay open.
+    where: { checkOutAt: null, kind: "STAY" },
     include: {
       customer: true,
       locker: true,
@@ -667,6 +670,13 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
   if (!visit || visit.checkOutAt || !visit.bill) {
     return res.status(404).json({ error: "Active visit not found" });
   }
+  // A takeout order has no entry charge to swap, and no profile whose pass
+  // balance could pay for one. It can't reach here anyway — it's checked out
+  // from birth, so the line above turns it away — but saying it plainly is what
+  // lets the pass check further down trust `visit.customer` exists.
+  if (!visit.customer) {
+    return res.status(400).json({ error: "A takeout order has no admission to set" });
+  }
 
   const item = await prisma.menuItem.findUnique({
     where: { id: menuItemId },
@@ -724,6 +734,12 @@ app.post("/visits/:visitId/change-locker", async (req, res) => {
   if (!visit || visit.checkOutAt) {
     return res.status(404).json({ error: "Active visit not found" });
   }
+  
+  // Nothing to move. A takeout order never held a locker in the first place.
+  const currentLockerId = visit.lockerId;
+  if (!visit.customer || currentLockerId === null) {
+    return res.status(400).json({ error: "A takeout order has no locker to move" });
+  }
 
   const newLocker = await prisma.locker.findUnique({ where: { id: lockerId } });
   if (!newLocker) {
@@ -740,7 +756,7 @@ app.post("/visits/:visitId/change-locker", async (req, res) => {
   // version of this is bad: both lockers occupied, or neither, or a guest
   // pointing at a locker somebody else has been given.
   const [freedLocker, claimedLocker, updatedVisit] = await prisma.$transaction([
-    prisma.locker.update({ where: { id: visit.lockerId }, data: { status: "AVAILABLE" } }),
+    prisma.locker.update({ where: { id: currentLockerId }, data: { status: "AVAILABLE" } }),
     prisma.locker.update({ where: { id: newLocker.id }, data: { status: "OCCUPIED" } }),
     prisma.visit.update({ where: { id: visitId }, data: { lockerId: newLocker.id } }),
   ]);
@@ -777,6 +793,13 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
     return res.status(404).json({ error: "Active visit not found" });
   }
   const billId = visit.bill.id;
+  // Pulled out as its own value rather than read off `visit` later, because the
+  // pass-credit step at the bottom runs inside a transaction callback and
+  // TypeScript stops trusting `visit.customerId` once it's in there.
+  const customerId = visit.customerId;
+  if (customerId === null) {
+    return res.status(400).json({ error: "This order has no customer to bill" });
+  }
 
   // Which of these need cooking, and how many passes this order grants in
   // total (usually zero — only pass packs have any).
@@ -825,7 +848,7 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
     //    have their next entry come off it straight away.
     if (passCredits > 0) {
       return tx.customer.update({
-        where: { id: visit.customerId },
+        where: { id: customerId },
         data: { visitPassBalance: { increment: passCredits } },
       });
     }
@@ -867,6 +890,13 @@ app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, re
     return res.status(400).json({ error: "Swap the admission type instead of removing it" });
   }
   const customer = lineItem.bill.visit.customer;
+  // A takeout bill is paid the instant it's created, so the "already paid"
+  // refusal a few lines up turns it away before this point. The guard is here
+  // because `customer` can now be empty in principle, and every line below this
+  // is pass arithmetic that means nothing without somebody to do it to.
+  if (!customer) {
+    return res.status(400).json({ error: "This charge is on a takeout order — refund the whole bill instead" });
+  }
   if (lineItem.visitCreditsGranted > 0 && customer.visitPassBalance < lineItem.visitCreditsGranted) {
     return res.status(409).json({
       error: "Some of those visit passes have already been used, so this sale can't be removed cleanly",
@@ -1028,8 +1058,13 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
       subtotal,
       tax,
       total,
-      customer: `${b.visit.customer.firstName} ${b.visit.customer.lastName}`,
-      locker: b.visit.locker.number,
+      // Takeout has no guest and no locker, so the two columns say what it was
+      // instead. Reports.tsx displays these as plain text and never asks where
+      // they came from, which is why that screen needs no changes at all.
+      customer: b.visit.customer
+        ? `${b.visit.customer.firstName} ${b.visit.customer.lastName}`
+        : b.visit.takeoutName || "Takeout",
+      locker: b.visit.locker ? b.visit.locker.number : `#${b.visit.takeoutNumber ?? "?"}`,
       redeemsPass: b.visit.redeemsPass,
       refunded: Boolean(b.refundedAt),
     };
@@ -1216,6 +1251,18 @@ app.post("/check-out", async (req, res) => {
   if (!visit || visit.checkOutAt) {
     return res.status(404).json({ error: "Active visit not found" });
   }
+
+  // A takeout order was paid at the counter and closed on the spot: no locker
+  // to hand back, nobody to sign out. Destructuring first, then checking, is
+  // what convinces TypeScript these are real numbers inside the transaction
+  // below — checking `visit.lockerId` directly wouldn't survive the closure.
+  const { lockerId, customerId } = visit;
+  if (visit.kind === "TAKEOUT" || lockerId === null || customerId === null || !visit.customer) {
+    return res.status(400).json({
+      error: "Takeout orders are paid at the counter — there's nothing to check out",
+    });
+  }
+
   // This stay was set up to be paid with a pass, but the balance has since hit
   // zero — most likely the pack they bought was voided. Refuse rather than
   // letting them leave without paying anything.
@@ -1234,7 +1281,7 @@ app.post("/check-out", async (req, res) => {
     });
     // 2. Put the locker back in the pool for the next guest.
     const updatedLocker = await tx.locker.update({
-      where: { id: visit.lockerId },
+      where: { id: lockerId },
       data: { status: "AVAILABLE" },
     });
     // 3. Close the bill. From here it's read-only: charges can no longer be
@@ -1257,7 +1304,7 @@ app.post("/check-out", async (req, res) => {
     //    passes credits immediately, but spending one waits until now.
     const updatedCustomer = visit.redeemsPass
       ? await tx.customer.update({
-          where: { id: visit.customerId },
+          where: { id: customerId },
           data: { visitPassBalance: { decrement: 1 } },
         })
       : null;
@@ -1274,6 +1321,124 @@ app.post("/check-out", async (req, res) => {
   io.emit("orders:changed", {});
   if (updatedCustomer) io.emit("customer:updated", updatedCustomer);
   res.json({ visit: updatedVisit, bill: updatedBill });
+});
+
+// ---------------------------------------------------------------------------
+// ---- Takeout ----
+//
+// A counter sale to somebody who isn't staying. No locker, no profile, no entry
+// charge — just food, paid for on the spot.
+//
+// THE WHOLE SALE IS ONE REQUEST, which is the difference between this and every
+// other way something gets sold here. A staying guest builds a tab over hours
+// and settles at the end; a takeout customer is standing at the counter with
+// their wallet out. So this opens the visit, writes the charges, marks the bill
+// paid and sends the ticket to the kitchen in one transaction.
+//
+// Paying FIRST is the point. The kitchen never starts cooking for somebody who
+// might walk off, and there's no such thing as an abandoned takeout tab to
+// clean up at close.
+//
+// Called from client/src/PointOfSale.tsx.
+// ---------------------------------------------------------------------------
+app.post("/takeout", async (req, res) => {
+  const { items, paymentMethod, name } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "Nothing to sell" });
+  }
+  for (const it of items) {
+    if (!it || !it.name || typeof it.amount !== "number") {
+      return res.status(400).json({ error: "Each item needs a name and an amount" });
+    }
+    // A pass pack ADDS passes to a customer's balance, and a takeout order has
+    // no customer to add them to. Without this the passes would simply
+    // evaporate — sold, paid for, and credited to nobody.
+    if (Number(it.visitCredits) > 0) {
+      return res.status(400).json({
+        error: `"${it.name}" sells visit passes, which need a customer profile — it can't go on a takeout order`,
+      });
+    }
+  }
+  // Only the two methods the buttons offer. The enum also allows GIFT_CARD and
+  // VISIT_PASS, and neither makes sense standing at a counter with no profile.
+  if (paymentMethod !== "CASH" && paymentMethod !== "CARD") {
+    return res.status(400).json({ error: "Takeout must be paid by cash or card" });
+  }
+
+  const settings = await getSettings();
+
+  // Ticket numbers restart every morning, so "order 4" means today's fourth.
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const { visit, bill, sentToKitchen } = await prisma.$transaction(async (tx) => {
+    // The highest number handed out today, plus one.
+    const last = await tx.visit.findFirst({
+      where: { kind: "TAKEOUT", checkInAt: { gte: startOfDay } },
+      orderBy: { takeoutNumber: "desc" },
+      select: { takeoutNumber: true },
+    });
+    const takeoutNumber = (last?.takeoutNumber ?? 0) + 1;
+
+    // 1. Open the visit and close it in the same breath. `checkOutAt` being set
+    //    from the start is what keeps this off /visits/active — and therefore
+    //    off the dashboard headcount, the till's guest grid and the locker
+    //    dials, none of which needed a single line changed for this feature.
+    const visit = await tx.visit.create({
+      data: {
+        kind: "TAKEOUT",
+        takeoutNumber,
+        takeoutName: typeof name === "string" && name.trim() ? name.trim() : null,
+        checkOutAt: new Date(),
+      },
+    });
+
+    // 2. The bill, born already settled.
+    const bill = await tx.bill.create({
+      data: {
+        visitId: visit.id,
+        taxRate: settings.taxRate,
+        paymentMethod,
+        paidAt: new Date(),
+      },
+    });
+
+    // 3. Every charge, one row per unit — same as everywhere else in this app.
+    //    Note `taxRate` is copied off the item exactly as it is for a staying
+    //    guest: a takeout coffee is taxed at the coffee's rate, full stop.
+    for (const it of items) {
+      await tx.billLineItem.create({
+        data: {
+          billId: bill.id,
+          description: it.name,
+          amount: it.amount,
+          taxRate: Number(it.taxRate) || 0,
+        },
+      });
+    }
+
+    // 4. Send the food. Unlike confirm-order there's no hunting for an existing
+    //    QUEUED ticket to join — this visit is one second old and has never had
+    //    an order before, so there is always exactly one ticket.
+    const kitchenItems = items.filter((i: { isKitchen?: boolean }) => i.isKitchen);
+    if (kitchenItems.length > 0) {
+      const order = await tx.order.create({ data: { visitId: visit.id } });
+      for (const it of kitchenItems) {
+        await tx.orderItem.create({
+          data: { orderId: order.id, name: it.name, note: it.note || null },
+        });
+      }
+    }
+
+    return { visit, bill, sentToKitchen: kitchenItems.length > 0 };
+  });
+
+  // A takeout order of nothing but a bottle of water makes no ticket, so
+  // there's nothing for the kitchen or the dashboard to hear about.
+  if (sentToKitchen) io.emit("orders:changed", {});
+  io.emit("bill:paid", bill);
+  res.status(201).json({ visit, bill });
 });
 
 // ---------------------------------------------------------------------------

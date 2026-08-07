@@ -79,8 +79,10 @@ type ReceiptBill = {
   lineItems: ReceiptLine[];
   visit: {
     checkInAt: string;
-    customer: { firstName: string; lastName: string };
-    locker: { number: string };
+    takeoutNumber: number | null;
+    takeoutName: string | null;
+    customer: { firstName: string; lastName: string } | null;
+    locker: { number: string } | null;
   };
 };
 
@@ -462,11 +464,15 @@ function Reports() {
               <div>
                 <div style={{ ...CAPS, fontSize: 11 }}>Receipt #{receipt.id}</div>
                 <div style={{ fontSize: 19, fontWeight: 800, marginTop: 4 }}>
-                  {receipt.visit.customer.firstName} {receipt.visit.customer.lastName}
+                  {receipt.visit.customer
+                    ? `${receipt.visit.customer.firstName} ${receipt.visit.customer.lastName}`
+                    : receipt.visit.takeoutName || "Takeout"}
                 </div>
                 <div style={{ fontSize: 12.5, fontWeight: 600, color: "#a89a86" }}>
                   {receipt.paidAt ? `${shortDay(receipt.paidAt)} · ${timeLabel(receipt.paidAt)} · ` : ""}
-                  locker {receipt.visit.locker.number}
+                  {receipt.visit.locker
+                    ? `locker ${receipt.visit.locker.number}`
+                    : `takeout #${receipt.visit.takeoutNumber ?? "?"}`}
                 </div>
               </div>
               <div

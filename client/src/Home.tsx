@@ -37,7 +37,16 @@ type Visit = {
   locker: { number: string };
 };
 type Locker = { id: number; gender: string; status: string };
-type Order = { id: number; status: string };
+// Home used to need nothing but the status, for the three kitchen counters. The
+// takeout tab needs the ticket itself, so this now describes more of what
+// /orders/open was already sending.
+type Order = {
+  id: number;
+  status: string;
+  createdAt: string;
+  items: { id: number; name: string; canceled: boolean }[];
+  visit: { kind: string; takeoutNumber: number | null; takeoutName: string | null };
+};
 type RosterEntry = { username: string; displayName: string; role: string };
 
 // A check-in time → "2h 05m in the building". Recalculated on every redraw,
@@ -55,6 +64,18 @@ function sinceLabel(iso: string) {
 function greeting() {
   const h = new Date().getHours();
   return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+
+// How each kitchen stage reads on the takeout tab. COMPLETE isn't here because
+// the server stops sending an order once it's picked up — it just vanishes.
+const ORDER_STATUS: Record<string, { label: string; ink: string; bg: string }> = {
+  QUEUED: { label: "In queue", ink: "#6b6152", bg: "#f3ede2" },
+  IN_PROGRESS: { label: "Being made", ink: "#7a5a3a", bg: "#f0e4d4" },
+  READY: { label: "Ready to collect", ink: "#3f5540", bg: "#e2eadb" },
+};
+
+function minutesSince(iso: string) {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
 }
 
 function initials(name: string) {
@@ -130,6 +151,9 @@ function Home() {
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
+  // Which half of the main card is showing. Guests in the building, or orders
+  // waiting at the counter.
+  const [tab, setTab] = useState<"guests" | "takeout">("guests");
 
   // A deliberately unused value. The empty slot before the comma means "I
   // don't care what the number is" — we only ever want the side effect of
@@ -200,6 +224,11 @@ function Home() {
   const womenIn = visits.length - menIn;
 
   const kitchenCount = (s: string) => orders.filter((o) => o.status === s).length;
+  // Open takeout orders, oldest first — the same list the kitchen is looking
+  // at, filtered down to the ones nobody is sitting in the building waiting for.
+  const takeoutOrders = orders
+    .filter((o) => o.visit.kind === "TAKEOUT")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
   // Build the red "at capacity" banner text — empty when there's room, which
   // is how the banner knows to hide itself.
@@ -261,12 +290,30 @@ function Home() {
           </div>
 
           <Card>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={CARD_LABEL}>GUESTS IN THE BATHS</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                {([
+                  { id: "guests" as const, label: "GUESTS IN THE BATHS", n: visits.length },
+                  { id: "takeout" as const, label: "TAKEOUT", n: takeoutOrders.length },
+                ]).map((t) => {
+                  const on = tab === t.id;
+                  return (
+                    <div
+                      key={t.id}
+                      onClick={() => setTab(t.id)}
+                      style={{ ...CARD_LABEL, marginBottom: 0, cursor: "pointer", padding: "6px 12px", borderRadius: 8, background: on ? "#f3ede2" : "transparent", color: on ? "#5c5344" : "#a89a86" }}
+                    >
+                      {t.label}
+                      {t.n > 0 ? ` · ${t.n}` : ""}
+                    </div>
+                  );
+                })}
+              </div>
               <Link to="/pos" style={{ color: "#8f5340", fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
                 See all →
               </Link>
             </div>
+            {tab === "guests" ? (
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
               <thead>
                 <tr>
@@ -308,6 +355,45 @@ function Home() {
                 )}
               </tbody>
             </table>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {takeoutOrders.map((o) => {
+                  const stage = ORDER_STATUS[o.status] ?? { label: o.status, ink: "#6b6152", bg: "#f3ede2" };
+                  // Items an admin pulled off the bill stay on the ticket in red
+                  // for the cook's benefit, but there's no reason to list them here.
+                  const active = o.items.filter((i) => !i.canceled);
+                  const mins = minutesSince(o.createdAt);
+                  return (
+                    <div key={o.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 6px", borderBottom: "1px solid #f3ede2" }}>
+                      <div style={{ flex: "none", width: 46, textAlign: "center" }}>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: "#7a6a53", lineHeight: 1 }}>
+                          {o.visit.takeoutNumber ?? "?"}
+                        </div>
+                        <div style={{ fontSize: 10, color: "#b8ab97", fontWeight: 700 }}>ORDER</div>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14 }}>
+                          {o.visit.takeoutName?.trim() || "No name given"}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#8a7f6d", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {active.length} item{active.length === 1 ? "" : "s"}
+                          {active.length > 0 ? ` · ${active.map((i) => i.name).join(", ")}` : ""}
+                        </div>
+                      </div>
+                      <div style={{ flex: "none", fontSize: 12, fontWeight: 600, color: mins >= 15 ? "#8f3b26" : "#a89a86" }}>
+                        {mins} min
+                      </div>
+                      <span style={{ flex: "none", fontSize: 11.5, fontWeight: 800, color: stage.ink, background: stage.bg, borderRadius: 20, padding: "5px 12px" }}>
+                        {stage.label}
+                      </span>
+                    </div>
+                  );
+                })}
+                {takeoutOrders.length === 0 && (
+                  <div style={{ padding: "16px 6px", color: "#8a7f6d" }}>No takeout orders waiting.</div>
+                )}
+              </div>
+            )}
           </Card>
         </div>
 
