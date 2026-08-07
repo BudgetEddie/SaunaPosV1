@@ -1,4 +1,18 @@
+// =============================================================================
+// TYPESCRIPT SETTINGS FOR THE CLIENT — a signpost, not the settings themselves.
+//
+// The client contains two kinds of code that need checking differently:
+//
+//   tsconfig.app.json   the app itself, which runs in a browser and so knows
+//                       about windows, clicks and localStorage
+//   tsconfig.node.json  vite.config.ts, which runs on this computer during the
+//                       build and knows about files and folders instead
+//
+// This file just points at both. There are no real settings here — if you're
+// looking for them, open one of the two files named below.
+// =============================================================================
 {
+  // Deliberately empty: this file checks nothing itself.
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },

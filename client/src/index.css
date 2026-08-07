@@ -1,3 +1,50 @@
+/* ============================================================================
+   THE ONLY STYLESHEET THE APP LOADS.
+   Imported by client/src/main.tsx. (App.css sits next to this one and is
+   unused leftover — ignore it.)
+
+   THE RULE THAT EXPLAINS WHY THIS FILE IS SO SHORT
+   ------------------------------------------------
+   Almost none of the app's appearance is in here. Colours, spacing, sizes and
+   layout are written directly onto the elements in the .tsx files, like this:
+
+       <div style={{ padding: 18, background: "#fffdf9" }}>
+
+   That keeps a component's look sitting right beside the component. So this
+   file only carries the handful of things that CANNOT be expressed that way:
+
+       :hover / :focus            reacting to the mouse or keyboard
+       ::placeholder              styling the grey hint text in a box
+       ::-webkit-scrollbar        making a scrollbar less ugly
+       @keyframes                 anything that animates
+       @media print               how a receipt comes out on paper
+       .active                    a class React Router adds by itself
+
+   If you're hunting for why something looks a certain way, it is almost
+   certainly NOT in this file — search the .tsx file for that screen.
+
+   HOW IT'S ORGANISED
+   ------------------
+   Class names carry a short prefix saying which screen owns them:
+       lg-   Login.tsx              k-    Kitchen.tsx
+       cd-   CustomerDirectory.tsx  rp-   Reports.tsx
+       pos-  PointOfSale.tsx        mn-   MenuPage.tsx
+
+   One exception worth knowing: `.cd-in` sits under the "Customer directory"
+   heading but is really the app's generic text-box style, and PointOfSale.tsx
+   uses it too. Changing it affects both screens.
+
+   The sections below run: starter leftovers → login → printing → shell →
+   and then one section per screen.
+   ============================================================================ */
+
+/* ---------------------------------------------------------------------------
+   LEFTOVERS FROM THE PROJECT TEMPLATE
+   Everything down to the "Banya 3 login page" heading came with the starter
+   and was never used. The purple accent below appears nowhere in the app, and
+   the page-width and font rules here are deliberately undone further down in
+   the "App shell" section. Left in place rather than untangled.
+   --------------------------------------------------------------------------- */
 :root {
   --text: #6b6375;
   --text-h: #08060d;
@@ -110,7 +157,13 @@ code {
   background: var(--code-bg);
 }
 
-/* ---- Banya 3 login page ---- */
+/* ---------------------------------------------------------------------------
+   ---- Banya 3 login page ----
+   Login.tsx only. The steam-burst logo's shimmer, the ember-red glow when a
+   box is focused, and the hover states — all things inline styles can't do.
+   --------------------------------------------------------------------------- */
+/* The login page has to break out of the width the shell sets, to fill the
+   whole window edge to edge. */
 .lg-page {
   font-family: 'Hanken Grotesk', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -120,6 +173,9 @@ code {
   transform: translateX(-50%);
 }
 
+/* The drifting steam wisps behind the logo: fade in, float upward, fade out,
+   repeat. The three wisps in Login.tsx all use this with different durations
+   and delays, so they never rise in step with each other. */
 @keyframes rise {
   0%   { opacity: 0;   transform: translateY(6px) scaleY(.9); }
   22%  { opacity: .28; }
@@ -133,13 +189,23 @@ code {
 .lg-chip:hover { border-color: #b5563a !important; color: #f4efe7 !important; }
 .lg-page :focus-visible { outline: 2px solid #c8b9a0; outline-offset: 3px; }
 
-/* ---- Receipt printing ---- */
+/* ---------------------------------------------------------------------------
+   ---- Receipt printing ----
+   Receipt.tsx only. A @media print block applies ONLY on paper, never on
+   screen — so this is how a page can look different when printed.
+
+   Anything marked "no-print" is hidden on paper: without it, every receipt
+   would come out with the grey "Print receipt" button at the top of it.
+   --------------------------------------------------------------------------- */
 @media print {
   .no-print { display: none !important; }
   body { background: #fff !important; }
 }
 
-/* ---- App shell (Banya theme) ---- */
+/* ---------------------------------------------------------------------------
+   ---- App shell (Banya theme) ----
+   Shell.tsx only — the dark sidebar that frames every screen.
+   --------------------------------------------------------------------------- */
 
 /* Vite's starter CSS centers everything in a 1280px box — the shell needs the
    whole window. These override those defaults app-wide. */
@@ -176,8 +242,14 @@ body {
   border-left-color: #b5563a;
 }
 
-/* ---- Customer directory ---- */
+/* ---------------------------------------------------------------------------
+   ---- Customer directory ----
+   Mostly CustomerDirectory.tsx — but note `.cd-in` immediately below is the
+   app's GENERAL text-box style despite living under this heading, and
+   PointOfSale.tsx uses it as well. Change it and both screens change.
+   --------------------------------------------------------------------------- */
 
+/* Every text box, dropdown and date field in the app. */
 .cd-in {
   width: 100%;
   border: 1.5px solid #d8cebc;
@@ -231,7 +303,11 @@ body {
   background: #f7f3ea;
 }
 
-/* ---- Point of sale ---- */
+/* ---------------------------------------------------------------------------
+   ---- Point of sale ----
+   PointOfSale.tsx. The lift-on-hover effect for guest cards and menu tiles,
+   which needs a real :hover rule.
+   --------------------------------------------------------------------------- */
 
 .pos-search {
   width: 100%;
@@ -260,7 +336,15 @@ body {
   border-color: #7a6a53;
 }
 
-/* ---- Checkout ---- */
+/* ---------------------------------------------------------------------------
+   ---- Checkout ----
+   Animations only, referenced from Checkout.tsx by name:
+     pulseDot  the slow green blink on "Kitchen items sync live"
+     popIn     the paid-confirmation card springing into view
+     toastIn   the message that slides up from the bottom
+     freshRow  the green flash on a charge that just appeared from elsewhere
+   The first two are also used by Kitchen.tsx.
+   --------------------------------------------------------------------------- */
 
 @keyframes pulseDot {
   0%, 100% { opacity: 1; }
@@ -279,7 +363,11 @@ body {
   100% { background: transparent; }
 }
 
-/* ---- Kitchen board ---- */
+/* ---------------------------------------------------------------------------
+   ---- Kitchen board ----
+   Kitchen.tsx. `fadeIn` is how a new ticket appears rather than snapping in;
+   the scrollbar rules stop a busy column looking like a spreadsheet.
+   --------------------------------------------------------------------------- */
 
 @keyframes fadeIn {
   0% { opacity: 0; }
@@ -311,7 +399,10 @@ body {
   border-radius: 8px;
 }
 
-/* ---- Reports ---- */
+/* ---------------------------------------------------------------------------
+   ---- Reports ----
+   Reports.tsx. The date picker and the hover highlight on a bill row.
+   --------------------------------------------------------------------------- */
 
 .rp-date {
   border: 1.5px solid #d8cebc;
@@ -332,7 +423,11 @@ body {
   background: #f7f3ea;
 }
 
-/* ---- Menu editor ---- */
+/* ---------------------------------------------------------------------------
+   ---- Menu editor ----
+   MenuPage.tsx. Its own input styling, the search box, and the hover
+   highlight on an item row.
+   --------------------------------------------------------------------------- */
 
 .mn-in {
   width: 100%;

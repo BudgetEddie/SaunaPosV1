@@ -1,3 +1,19 @@
+/* ============================================================================
+   ⚠️  THIS FILE IS NOT USED. Nothing loads it.
+
+   It's the sample stylesheet that came with the project template, left behind
+   when the real design was built. The only stylesheet the app actually loads
+   is index.css, imported by main.tsx — this one is imported by nothing, and
+   none of the class names below (.counter, .hero, #docs …) appear anywhere in
+   the app.
+
+   Editing anything here will have no effect whatsoever. Go to index.css.
+
+   It's kept rather than deleted only because removing files from a working
+   system is somebody's decision to make, not an accident to have. Deleting it
+   would be perfectly safe.
+   ============================================================================ */
+
 .counter {
   font-size: 16px;
   padding: 5px 10px;

@@ -1,6 +1,36 @@
+// ============================================================================
+// REPORTS — the day's takings. ADMIN ONLY.
+//
+// WHAT IT IS
+//   The books. Pick a day (or "all time") and it shows what came in: how many
+//   bills, the subtotal, the tax, the split between cash and card, refunds,
+//   best-selling items and most frequent guests. Every closed bill is listed,
+//   and each can be re-opened as a receipt or refunded.
+//
+//   All the adding up happens on the SERVER. This screen only displays what
+//   it's handed — which is why there's so little arithmetic here compared to
+//   the Checkout screen.
+//
+// WHERE IT'S USED
+//   The "/reports" route in client/src/main.tsx. Nothing imports it.
+//   The sidebar in Shell.tsx only shows the link to admins, but typing the
+//   address still loads the page — so it checks the role again itself, and
+//   the server refuses the data regardless. Three layers, and only the last
+//   one actually protects anything.
+//
+//   It's the only main screen with NO live connection. Yesterday's takings
+//   don't change while you look at them, so there's nothing to listen for.
+//
+// WHAT IT TALKS TO   (all in server/src/index.ts)
+//   GET  /reports/daily?date=…&scope=…  → the whole report in one go
+//   GET  /bills/:id                     → fill the receipt overlay
+//   POST /bills/:id/refund              → refund a whole bill
+// ============================================================================
+
 import { useEffect, useState } from "react";
 import { authFetch } from "./authFetch.ts";
 
+// One closed bill in the day's list.
 type BillRow = {
   id: number;
   paidAt: string;
@@ -15,6 +45,11 @@ type BillRow = {
 };
 type TopItem = { name: string; qty: number; revenue: number };
 type Visitor = { id: number; name: string; visits: number; spend: number };
+
+// The server's whole answer, in one object. Worth knowing:
+//   total  — everything taken, refunds included
+//   net    — total minus refunds; the figure that actually matters
+//   truncated — the list of bills is capped at 200, and this says it was cut
 type Report = {
   scope: string;
   date: string;
@@ -78,11 +113,17 @@ function initials(name: string) {
   const p = name.trim().split(/\s+/);
   return `${p[0]?.[0] ?? ""}${p[1]?.[0] ?? ""}`.toUpperCase();
 }
+// Today as "2026-08-04", built by hand from the local clock. Deliberately not
+// using the built-in date-to-text conversion, which works in UTC and would
+// hand back yesterday's date for anyone west of Greenwich late in the evening.
 function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
+
 // Read a YYYY-MM-DD back at midday, so no timezone can nudge it to the day before.
+// (Reading it at midnight, the default, leaves it one timezone shift away from
+// slipping into the previous day. Midday leaves twelve hours of slack.)
 function dayLabel(iso: string) {
   return new Date(`${iso}T12:00:00`).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 }
@@ -96,6 +137,9 @@ function methodLabel(method: string) {
   return method.charAt(0) + method.slice(1).toLowerCase().replace("_", " ");
 }
 // The bill stores one charge per unit; the receipt reads better grouped.
+// (The same squashing Checkout.tsx does — see groupBill there. This version is
+// simpler because nothing here can be voided, so it doesn't need to remember
+// the individual charge ids.)
 function groupLines(lines: ReceiptLine[]) {
   const rows = new Map<string, { key: string; name: string; qty: number; amount: number }>();
   for (const l of lines) {
@@ -111,6 +155,8 @@ function groupLines(lines: ReceiptLine[]) {
   return Array.from(rows.values());
 }
 
+// One of the eight figure tiles across the top: a caption, a big number, and
+// a smaller line of context underneath.
 function Kpi({ label, value, note, ink }: { label: string; value: string; note: string; ink?: string }) {
   return (
     <div style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 14, padding: "16px 18px", boxShadow: "0 1px 2px rgba(43,38,32,.04)" }}>
@@ -124,17 +170,19 @@ function Kpi({ label, value, note, ink }: { label: string; value: string; note: 
 }
 
 function Reports() {
-  const [date, setDate] = useState(todayStr());
-  const [scope, setScope] = useState<"day" | "all">("day");
+  const [date, setDate] = useState(todayStr());        // which day
+  const [scope, setScope] = useState<"day" | "all">("day");  // one day or all time
   const [report, setReport] = useState<Report | null>(null);
-  const [denied, setDenied] = useState(false);
-  const [receipt, setReceipt] = useState<ReceiptBill | null>(null);
+  const [denied, setDenied] = useState(false);         // server said no
+  const [receipt, setReceipt] = useState<ReceiptBill | null>(null);  // overlay
 
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
 
   const load = () => {
     authFetch(`/reports/daily?date=${date}&scope=${scope}`).then(async (r) => {
+      // A refusal here means this login isn't an admin. Rather than an error
+      // popup, it swaps the whole page for a polite note.
       if (!r.ok) {
         setDenied(true);
         return;
@@ -144,12 +192,19 @@ function Reports() {
     });
   };
 
+  // Re-fetch whenever the chosen day or the day/all-time switch changes. This
+  // is the one effect that isn't "run once" — its whole job is to react.
   useEffect(() => {
     if (!isAdmin) return;
     load();
+    // The linter wants `load` listed here too. It's left out on purpose: `load`
+    // is rebuilt on every redraw, so listing it would make this fetch on every
+    // redraw as well, in a loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date, scope]);
 
+  // Not an admin — show the note and nothing else. This is a courtesy, not
+  // protection; the real refusal is the server's.
   if (!isAdmin || denied) {
     return (
       <div style={{ background: "#f4efe7", minHeight: "100vh", padding: "26px" }}>
@@ -165,7 +220,13 @@ function Reports() {
     setReceipt(await res.json());
   };
 
+  // Refund a whole bill. Nothing is deleted — the bill keeps every charge and
+  // is stamped with the date and reason, so the paper trail survives. It's
+  // all-or-nothing (there's no partial refund), can't be done twice, and only
+  // works on a bill that was actually paid.
   const refund = async (bill: BillRow) => {
+    // `prompt` returns null if Cancel was pressed, as opposed to "" for an
+    // empty reason — so this check must be against null specifically.
     const reason = prompt(`Refund ${money(bill.total)} to ${bill.customer}?\n\nReason:`);
     if (reason === null) return;
     const res = await authFetch(`/bills/${bill.id}/refund`, {
@@ -182,11 +243,17 @@ function Reports() {
     load();
   };
 
+  // The cash-vs-card split, for the drawer count at the end of the night.
   const card = report?.byMethod.CARD ?? 0;
   const cash = report?.byMethod.CASH ?? 0;
   const cardCount = report?.bills.filter((b) => b.paymentMethod === "CARD").length ?? 0;
   const cashCount = report?.bills.filter((b) => b.paymentMethod === "CASH").length ?? 0;
+  // The blended tax rate for the day, worked out backwards. Because items can
+  // carry different rates, this lands somewhere between them rather than on
+  // any one configured rate.
   const effectiveTax = report && report.subtotal > 0 ? `${((report.tax / report.subtotal) * 100).toFixed(2)}%` : "—";
+  // The best seller's revenue, used as the full-width mark for the bars in the
+  // best-sellers list. Falls back to 1 so nothing divides by zero.
   const maxRevenue = report && report.topItems.length > 0 ? report.topItems[0].revenue : 1;
 
   return (
@@ -228,6 +295,9 @@ function Reports() {
       ) : (
         <div style={{ padding: "20px 26px 28px", display: "flex", flexDirection: "column", gap: 18 }}>
           {/* KPIs */}
+          {/* Eight figures at a glance. "Total taken" and "Net revenue" differ
+              by exactly the refunds given — a refunded bill still counts as a
+              sale that happened, it just has money going back out against it. */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
             <Kpi label="Total taken" value={money(report.total)} note={`${report.billCount} bill${report.billCount === 1 ? "" : "s"} · before refunds`} />
             <Kpi label="Net revenue" value={money(report.net)} note="Total less refunds given" />
@@ -262,6 +332,9 @@ function Reports() {
               <div />
             </div>
 
+            {/* Every closed bill, newest first. A refunded one is struck
+                through and its Refund button is dead — the server rejects a
+                second refund anyway, so this just makes that visible. */}
             {report.bills.map((b) => (
               <div key={b.id} className="rp-row" style={{ display: "grid", gridTemplateColumns: BILL_COLS, gap: 12, alignItems: "center", padding: "12px 22px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
                 <div>
@@ -315,6 +388,10 @@ function Reports() {
                 <div style={{ ...MICRO, textAlign: "right" }}>Qty</div>
                 <div style={{ ...MICRO, textAlign: "right" }}>Revenue</div>
               </div>
+              {/* Ranked by revenue, not by count — one massage outranks a lot
+                  of teas. Refunded bills are left out of this entirely, since
+                  those sales were undone. The little bar under each name is
+                  drawn as a percentage of the top seller's revenue. */}
               {report.topItems.map((item, i) => (
                 <div key={item.name} style={{ display: "grid", gridTemplateColumns: "26px 1fr 70px 90px", gap: 12, alignItems: "center", padding: "12px 22px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: "#c8b9a0" }}>{i + 1}</div>
@@ -340,6 +417,8 @@ function Reports() {
                 <div style={CAPS}>Most frequent visitors</div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>All time</div>
               </div>
+              {/* Always all-time, whichever day is selected above — regulars
+                  are regulars regardless of which day you're looking at. */}
               {report.frequentVisitors.map((v) => (
                 <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 22px", borderBottom: "1px solid rgba(43,38,32,.05)" }}>
                   <div style={{ width: 34, height: 34, flex: "none", borderRadius: "50%", background: "#efe7d9", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#7a6a53" }}>
@@ -366,12 +445,16 @@ function Reports() {
       )}
 
       {/* receipt overlay */}
+      {/* A read-only look at one bill, floating over the page. Clicking the
+          dark backdrop closes it. */}
       {receipt && (
         <div
           onClick={() => setReceipt(null)}
           style={{ position: "fixed", inset: 0, background: "rgba(43,38,32,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 30, zIndex: 50 }}
         >
           <div
+            // Stop clicks inside the card from reaching the backdrop behind it,
+            // which would otherwise close the receipt every time you touched it.
             onClick={(e) => e.stopPropagation()}
             style={{ width: 390, maxHeight: "100%", overflowY: "auto", background: "#fffdf9", borderRadius: 18, padding: "26px 26px 22px", boxShadow: "0 40px 80px -30px rgba(43,38,32,.6)" }}
           >
@@ -434,6 +517,8 @@ function Reports() {
               <div style={{ fontSize: 12, fontWeight: 600, color: "#8f3f28", marginTop: 4 }}>{receipt.refundReason}</div>
             )}
 
+            {/* Opens Receipt.tsx at /receipt/<id> in a new tab, in the proper
+                till-roll layout. Checkout.tsx has the same button. */}
             <button
               onClick={() => window.open(`/receipt/${receipt.id}`, "_blank")}
               style={{ marginTop: 16, width: "100%", padding: 13, border: "1.5px solid #d8cebc", borderRadius: 12, background: "#fffdf9", color: "#5f5340", fontFamily: "inherit", fontSize: 14, fontWeight: 700, cursor: "pointer" }}

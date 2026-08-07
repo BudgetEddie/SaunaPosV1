@@ -1,3 +1,34 @@
+// ============================================================================
+// THE TILL — where things get sold.
+//
+// WHAT IT IS
+//   The busiest screen in the app, with three states:
+//     1. A grid of everyone currently checked in.
+//     2. That guest's order screen: menu tiles on the left, a running cart on
+//        the right, and their open tab across the top.
+//     3. Checkout, which takes over the whole page (see below).
+//
+//   The important idea: the CART is not the TAB. Tapping menu tiles fills a
+//   cart that exists only in this browser — nothing is charged and the kitchen
+//   hears nothing. Pressing "Add to tab" is the moment it becomes real.
+//
+// WHERE IT'S USED
+//   The "/pos" route in client/src/main.tsx.
+//   It renders Checkout.tsx itself — Checkout has no address of its own, so
+//   this file is its only parent.
+//   CustomerDirectory.tsx sends people here as "/pos?locker=M07", which opens
+//   that guest's order screen directly.
+//
+// WHAT IT TALKS TO   (all in server/src/index.ts)
+//   GET  /visits/active                → the guest grid
+//   GET  /lockers                      → the "Move locker…" dropdown
+//   GET  /categories                   → the menu
+//   GET  /settings                     → default tax rate, for custom charges
+//   POST /visits/:id/set-admission     → swap the entry charge
+//   POST /visits/:id/confirm-order     → cart becomes charges + kitchen ticket
+//   POST /visits/:id/change-locker     → move a guest to a different locker
+// ============================================================================
+
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
@@ -5,6 +36,7 @@ import { authFetch } from "./authFetch.ts";
 import Checkout from "./Checkout.tsx";
 import { type Category, type Locker, type MenuItem, type Visit } from "./types.ts";
 
+// The live line to the server, opened once when the app starts.
 const socket = io("http://localhost:4000");
 
 // One line in the cart. `qty` is what the − / + buttons change; when the order
@@ -20,6 +52,10 @@ type CartLine = {
   note: string;
   qty: number;
 };
+// The whole cart: a lookup table from a made-up key to a line. Keys are
+// prefixed by kind — "m12" for menu item 12, "c" plus a random string for a
+// one-off custom charge — so tapping the same tea twice finds the existing
+// line and bumps it, while two separate custom charges never collide.
 type Cart = Record<string, CartLine>;
 
 const PANEL: React.CSSProperties = {
@@ -60,6 +96,13 @@ function fmtDuration(iso: string) {
   const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
   return mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
 }
+
+// The "open tab" figure on the guest cards and the order screen header.
+//
+// This is a quick estimate: it applies one rate to the whole bill. The
+// Checkout screen instead adds up each charge's own frozen rate, so on a bill
+// mixing rates the two differ by pennies. Checkout is the one that's binding —
+// this is just a number to glance at across the room.
 function billTotal(visit: Visit) {
   const subtotal = visit.bill.lineItems.reduce((sum, item) => sum + item.amount, 0);
   const tax = subtotal * visit.bill.taxRate;
@@ -73,6 +116,9 @@ function openKitchen(visit: Visit) {
   const ready = orders.some((o) => o.status === "READY" && o.items.some((i) => !i.canceled));
   return { count, ready };
 }
+// The little coloured pills on a guest card: their notes (allergies, warnings)
+// in red, and how much food they're waiting on — green once it's ready to
+// collect, so the desk can tell them.
 function chipsFor(visit: Visit) {
   const chips: { key: string; label: string; ink: string; bg: string }[] = [];
   const notes = visit.customer.notes;
@@ -104,22 +150,31 @@ function Chip({ label, ink, bg }: { label: string; ink: string; bg: string }) {
 }
 
 function PointOfSale() {
-  const [visits, setVisits] = useState<Visit[]>([]);
-  const [lockers, setLockers] = useState<Locker[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [defaultTaxRate, setDefaultTaxRate] = useState(0.13);
+  // ---- what the server told us ----
+  const [visits, setVisits] = useState<Visit[]>([]);        // everyone checked in
+  const [lockers, setLockers] = useState<Locker[]>([]);     // for moving a guest
+  const [categories, setCategories] = useState<Category[]>([]);  // the menu
+  const [defaultTaxRate, setDefaultTaxRate] = useState(0.13);    // for custom charges
+
+  // ---- what's on screen right now ----
   const [selectedVisitId, setSelectedVisitId] = useState<number | null>(null);
   const [checkoutVisit, setCheckoutVisit] = useState<Visit | null>(null);
-  const [autoOpened, setAutoOpened] = useState(false);
-  const [cart, setCart] = useState<Cart>({});
+  const [autoOpened, setAutoOpened] = useState(false);      // guard, see below
+  const [cart, setCart] = useState<Cart>({});               // the unconfirmed order
   const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
-  const [justAdded, setJustAdded] = useState(false);
-  const [customOpen, setCustomOpen] = useState(false);
+  const [justAdded, setJustAdded] = useState(false);        // the green "Added ✓" flash
+  const [customOpen, setCustomOpen] = useState(false);      // the custom-charge form
   const [customName, setCustomName] = useState("");
   const [customAmount, setCustomAmount] = useState("");
-  const [newLockerId, setNewLockerId] = useState("");
+  const [newLockerId, setNewLockerId] = useState("");       // chosen in "Move locker…"
+
+  // Bumped once a minute purely to redraw the "in for 2h 05m" labels.
   const [, setTick] = useState(0);
 
+  // Read "?locker=M07" off the address. CustomerDirectory.tsx puts it there
+  // when staff press "Check out {name}" — it's how one screen hands a specific
+  // guest to this one. It also pre-fills the search box, so if the auto-open
+  // below misses, staff still land on a filtered list.
   const [searchParams] = useSearchParams();
   const lockerParam = searchParams.get("locker") ?? "";
   const [query, setQuery] = useState(lockerParam);
@@ -136,6 +191,10 @@ function PointOfSale() {
     loadMenu();
     loadSettings();
 
+    // Live updates from other terminals. As everywhere in this app, the
+    // message contents are ignored — each one just means "go and refetch".
+    // The menu gets its own handler because it changes for different reasons
+    // (an admin editing prices) than the floor does.
     const refresh = () => { loadVisits(); loadLockers(); };
     socket.on("visit:checked-in", refresh);
     socket.on("visit:checked-out", refresh);
@@ -147,6 +206,8 @@ function PointOfSale() {
     socket.on("menu:updated", loadMenu);
 
     const timer = setInterval(() => setTick((t) => t + 1), 60000);
+
+    // Tidy-up when leaving the till, so listeners and the timer don't pile up.
     return () => {
       socket.off("visit:checked-in", refresh);
       socket.off("visit:checked-out", refresh);
@@ -162,6 +223,11 @@ function PointOfSale() {
 
   // Arriving from the directory's "Check out {name}" button: ?locker=M07 opens
   // that guest's order screen directly, once, as soon as the visits land.
+  //
+  // It has to wait for the guest list, hence its own effect. The `autoOpened`
+  // flag is what makes it fire exactly once — without it, every later refresh
+  // of the guest list would drag staff back to that same guest, however far
+  // they'd navigated away.
   useEffect(() => {
     if (autoOpened || !lockerParam || visits.length === 0) return;
     setAutoOpened(true);
@@ -182,6 +248,7 @@ function PointOfSale() {
     ? (visits.find((v) => v.id === checkoutVisit.id) ?? checkoutVisit)
     : null;
 
+  // Show whatever the server objected to, and report whether it worked.
   const showError = async (res: Response) => {
     if (!res.ok) {
       const { error } = await res.json();
@@ -190,6 +257,8 @@ function PointOfSale() {
     return res.ok;
   };
 
+  // Open a guest's order screen with everything from the last one cleared —
+  // an abandoned cart must never follow staff onto the next person's tab.
   const openGuest = (id: number) => {
     setSelectedVisitId(id);
     setCart({});
@@ -199,6 +268,14 @@ function PointOfSale() {
     setNewLockerId("");
   };
 
+  // Add or remove one of something. This single function powers the menu
+  // tiles, the − button and the + button: tapping a tile is bump(+1).
+  // Dropping to zero removes the line entirely rather than leaving a "0 ×".
+  //
+  // Note it builds a COPY of the cart rather than editing the existing one.
+  // That's a React rule — it spots changes by comparing before and after, so
+  // altering the original in place would leave the screen showing stale
+  // numbers.
   const bump = (line: Omit<CartLine, "qty">, delta: number) => {
     setJustAdded(false);
     setCart((prev) => {
@@ -210,6 +287,7 @@ function PointOfSale() {
     });
   };
 
+  // Attach a note to a kitchen line — "extra hot", "no onions".
   const setCartNote = (id: string, note: string) => {
     setCart((prev) => {
       const line = prev[id];
@@ -218,6 +296,14 @@ function PointOfSale() {
     });
   };
 
+  // Tapping a menu tile. Two completely different outcomes:
+  //
+  //   Entry charges (admission) don't go in the cart at all. A guest has
+  //   exactly one entry charge, decided at check-in, and picking a different
+  //   one REPLACES it — so this goes straight to the server. That's why those
+  //   tiles say "applied" instead of showing a quantity.
+  //
+  //   Everything else just goes in the cart.
   const pickItem = async (item: MenuItem, category: Category) => {
     // Pass packs live inside the Visit category but are ordinary sales — this
     // check has to come first, or selling one would overwrite the entry charge.
@@ -241,11 +327,15 @@ function PointOfSale() {
     }, 1);
   };
 
+  // A one-off charge that isn't on the menu — a replacement towel, a damage
+  // fee. It has no menu item behind it, so it's taxed at the house rate.
   const addCustomCharge = (e: FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(customAmount);
     if (!customName || Number.isNaN(amount)) return;
     bump({
+      // A fresh random id every time, so two custom charges never merge into
+      // one line the way two taps of the same menu tile do.
       id: `c${crypto.randomUUID()}`,
       name: customName,
       price: amount,
@@ -259,8 +349,14 @@ function PointOfSale() {
     setCustomOpen(false);
   };
 
+  // THE MOMENT IT BECOMES REAL. Everything up to here has been local to this
+  // browser; this turns the cart into actual charges on the tab and, for food
+  // and drink, an actual ticket on the kitchen board.
   const confirmOrder = async () => {
     if (!selected || cartLines.length === 0) return;
+    // The cart says "Tea ×3", but a bill has always been one row per drink,
+    // and the kitchen needs three separate things to make. So each line is
+    // fanned back out into `qty` copies of itself before sending.
     const items = cartLines.flatMap((line) =>
       Array.from({ length: line.qty }, () => ({
         name: line.name,
@@ -277,12 +373,19 @@ function PointOfSale() {
       body: JSON.stringify({ items }),
     }));
     if (!ok) return;
+    // Empty the cart and flash the button green for a couple of seconds, so
+    // there's visible confirmation the tab was actually updated.
     setCart({});
     setJustAdded(true);
     setTimeout(() => setJustAdded(false), 2200);
+    // Refetch so the tab total updates immediately. The server also broadcasts
+    // the change, so this screen often fetches twice — harmless, and it means
+    // the total is right even if the broadcast is slow.
     loadVisits();
   };
 
+  // Move a guest to a different locker mid-visit. The server frees the old one
+  // and claims the new one together, so a crash can't leave both occupied.
   const changeLocker = async () => {
     if (!selected || !newLockerId) return;
     await showError(await authFetch(`/visits/${selected.id}/change-locker`, {
@@ -293,6 +396,8 @@ function PointOfSale() {
     setNewLockerId("");
   };
 
+  // Move on to payment — but refuse while there's an unconfirmed cart, since
+  // walking into checkout would silently discard it and undercharge the guest.
   const goToCheckout = () => {
     if (!selected) return;
     if (cartLines.length > 0) {
@@ -302,12 +407,14 @@ function PointOfSale() {
     setCheckoutVisit(selected);
   };
 
+  // The cart's running figures, recalculated on every redraw.
   const cartLines = Object.values(cart);
   const cartCount = cartLines.reduce((n, l) => n + l.qty, 0);
   const cartSubtotal = cartLines.reduce((sum, l) => sum + l.price * l.qty, 0);
   // Every line brings its own rate now — a 0% massage next to a 13% sandwich.
   const cartTax = cartLines.reduce((sum, l) => sum + l.price * l.qty * l.taxRate, 0);
 
+  // Filter the guest grid by name or locker number, in the browser.
   const q = query.trim().toLowerCase();
   const filtered = q
     ? visits.filter((v) =>
@@ -351,6 +458,9 @@ function PointOfSale() {
     </div>
   );
 
+  // ---------------------------------------------------------------------------
+  // VIEW 1 — the grid of everyone checked in. Tap a card to open their tab.
+  // ---------------------------------------------------------------------------
   const listView = (
     <div style={{ padding: "22px 26px 28px", display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fffdf9", border: "1.5px solid #d8cebc", borderRadius: 14, padding: "14px 18px" }}>
@@ -423,13 +533,20 @@ function PointOfSale() {
     </div>
   );
 
+  // ---------------------------------------------------------------------------
+  // VIEW 2 — one guest's order screen: menu on the left, cart on the right.
+  // ---------------------------------------------------------------------------
   const orderView = !selected ? null : (() => {
     const visit = selected;
     const tab = billTotal(visit);
+    // Which entry charge is currently on their tab — used to put the "applied"
+    // badge on the matching admission tile.
     const currentAdmission = visit.bill.lineItems.find((li) => li.isAdmission) ?? null;
+    // Show every category, or just the one whose filter chip is selected.
     const shownCategories = activeCategoryId === null
       ? categories
       : categories.filter((c) => c.id === activeCategoryId);
+    // Only free lockers from this guest's own pool can be moved into.
     const availableLockers = lockers.filter(
       (l) => l.gender === visit.customer.gender && l.status === "AVAILABLE"
     );
@@ -507,10 +624,16 @@ function PointOfSale() {
                   )}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+                  {/* Only items marked available — that's the "86 it" switch
+                      on the Menu screen, for when the kitchen runs out. */}
                   {category.items.filter((item) => item.available).map((item) => {
                     const isSwap = category.isAdmission && item.visitCredits === 0;
                     const qty = cart[`m${item.id}`]?.qty ?? 0;
+                    // An entry charge is matched by NAME, since the tab stores
+                    // the description rather than a link back to the menu.
                     const applied = isSwap && currentAdmission?.description === item.name;
+                    // A tile is highlighted either because it's in the cart or
+                    // because it's the entry charge already on the tab.
                     const lit = qty > 0 || applied;
                     return (
                       <div
@@ -596,6 +719,9 @@ function PointOfSale() {
                     {money(line.price * line.qty)}
                   </div>
                 </div>
+                {/* Only food and drink get a note box — there's nothing to
+                    tell the kitchen about a towel. The note travels with the
+                    item onto the ticket. */}
                 {line.isKitchen && (
                   <input
                     className="cd-in"
@@ -662,6 +788,8 @@ function PointOfSale() {
     );
   })();
 
+  // Header always; below it the order screen if a guest is open, else the grid.
+  // (The third state, Checkout, returned earlier and never reaches this.)
   return (
     <div style={{ background: "#f4efe7", minHeight: "100vh" }}>
       {header}

@@ -1,11 +1,38 @@
+// =============================================================================
+// TYPESCRIPT SETTINGS FOR THE SERVER.
+//
+// TypeScript is JavaScript with labels on things — "this is a number, this is
+// text". The labels are checked before the code runs and then thrown away, so
+// they cost nothing at runtime. This file is how strict that checking is.
+//
+// You'd rarely touch it. It's here so the settings aren't a mystery.
+//
+// (This file allows comments even though it looks like plain data. package.json
+// next door does NOT — adding one there breaks npm.)
+// =============================================================================
 {
   "compilerOptions": {
+    // Which vintage of JavaScript to produce. ES2020 is comfortably supported
+    // by any Node version this would run on.
     "target": "ES2020",
+    // How files refer to each other. The server uses the older `require` style;
+    // the client uses the newer `import` style. Hence two different settings.
     "module": "commonjs",
+    // Lets the two styles above coexist, which some libraries need.
     "esModuleInterop": true,
+    // Treat "Index.ts" and "index.ts" as different files. Macs don't by
+    // default, which is a classic way for code to work on a laptop and fail on
+    // a real server.
     "forceConsistentCasingInFileNames": true,
+    // THE IMPORTANT ONE. Turns on every check TypeScript has, including
+    // insisting that anything which might be missing is handled. It's the
+    // difference between catching a mistake now and catching it at the till.
     "strict": true,
+    // Don't re-check the innards of installed libraries — they're not ours to
+    // fix, and skipping them makes checking much faster.
     "skipLibCheck": true,
+    // Tell it this code runs on a server, so things like reading files and
+    // environment variables are expected to exist.
     "types": ["node"]
   }
 }

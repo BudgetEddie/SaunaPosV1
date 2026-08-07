@@ -1,11 +1,48 @@
+# =============================================================================
+# THE DATABASE, IN A BOX.
+#
+# WHAT IT IS
+#   Instructions for Docker to run a PostgreSQL database without anyone having
+#   to install PostgreSQL on this computer. It downloads a ready-made image and
+#   runs it in a container — a sealed little box that can be thrown away and
+#   recreated without touching anything else on the machine.
+#
+# HOW TO USE IT
+#   docker compose up -d      start the database (the -d means in the
+#                             background, so you get your terminal back)
+#   docker compose down       stop it — your data survives
+#   docker compose down -v    stop it AND DELETE EVERYTHING
+#
+#   This must be running before the server will start. Nothing else in the
+#   project reads this file.
+#
+# WHERE THE SETTINGS BELOW ARE USED
+#   The server doesn't read this file — it reads DATABASE_URL from server/.env,
+#   which has to spell out the same name, password and port. Change one and you
+#   must change the other, or the server won't be able to connect.
+# =============================================================================
+
 services:
   db:
+    # PostgreSQL version 16. Pinned to a specific version on purpose: "latest"
+    # would silently upgrade one day and could break things.
     image: postgres:16
     environment:
       POSTGRES_USER: sauna
+      # ⚠️  Fine on a laptop, not fine on a real machine. Anything that can
+      #     reach port 5432 can use this. Change it — and server/.env — before
+      #     this runs anywhere other than someone's desk.
       POSTGRES_PASSWORD: change_me
       POSTGRES_DB: sauna_pos
+    # Make the database reachable at localhost:5432. Written as
+    # "outside:inside" — the port on this computer, then the port in the box.
     ports: ["5432:5432"]
+    # THE IMPORTANT LINE. Containers forget everything when they stop. This
+    # keeps the actual data in a named store outside the box, so the database
+    # survives being stopped, restarted or rebuilt.
     volumes: [pgdata:/var/lib/postgresql/data]
+
+# Declares that store. It lives wherever Docker keeps such things, not in this
+# folder — so it isn't in the project and won't be caught by a backup of it.
 volumes:
   pgdata:

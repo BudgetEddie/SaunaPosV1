@@ -1,3 +1,25 @@
+// ============================================================================
+// A ONE-TIME REPAIR SCRIPT — ALREADY RUN. Kept as a record.
+//
+// WHAT IT WAS FOR
+//   When per-item tax rates and menu groups were added to the database, every
+//   record that already existed had those fields empty. This filled them in,
+//   choosing values that left every existing price and every past receipt
+//   adding up to exactly what they did before.
+//
+//   It has served its purpose. Running it again would stamp EVERY menu item
+//   with the house tax rate, wiping any per-item rates set since — so don't,
+//   unless you're rebuilding an old database from scratch.
+//
+// WHERE IT'S USED
+//   Nowhere. Nothing imports it and nothing runs it. It's here because it
+//   documents how the data got into its current shape, which is genuinely
+//   useful if a historic figure ever looks wrong.
+//
+//   The migration it accompanied is
+//   prisma/migrations/20260730204557_menu_groups_and_item_tax/.
+// ============================================================================
+
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();

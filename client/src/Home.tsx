@@ -1,10 +1,35 @@
+// ============================================================================
+// THE DASHBOARD — the front page, at a glance.
+//
+// WHAT IT IS
+//   Read-only. It changes nothing: it shows how many lockers are free in each
+//   pool, who's currently in the building, how long they've been here, and
+//   what the kitchen has on. Every button on it is a link somewhere else.
+//
+// WHERE IT'S USED
+//   The "/" route in client/src/main.tsx. Nothing imports it.
+//   It links out to /customers (Check In, New Customer), /pos and /kitchen.
+//
+// WHAT IT TALKS TO   (all in server/src/index.ts)
+//   GET /visits/active  → who's in the building
+//   GET /lockers        → the two capacity dials
+//   GET /orders/open    → the kitchen counts
+//   GET /login-roster   → the "on shift" avatars
+// ============================================================================
+
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch, type LoggedInUser } from "./authFetch.ts";
 
+// Open a live line to the server, so this screen finds out when something
+// changes on another terminal. Note this sits OUTSIDE the component, at the
+// top of the file, so the connection is made once when the app starts and
+// stays open — not one per redraw.
 const socket = io("http://localhost:4000");
 
+// This screen describes its own slimmed-down shapes rather than importing the
+// full ones from types.ts, because it only displays a handful of fields.
 type Visit = {
   id: number;
   checkInAt: string;
@@ -15,6 +40,8 @@ type Locker = { id: number; gender: string; status: string };
 type Order = { id: number; status: string };
 type RosterEntry = { username: string; displayName: string; role: string };
 
+// A check-in time → "2h 05m in the building". Recalculated on every redraw,
+// which is why the timer further down exists.
 function fmtDuration(iso: string) {
   const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
@@ -24,6 +51,7 @@ function sinceLabel(iso: string) {
   return `since ${new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
 
+// "Good morning" / "Good afternoon" / "Good evening", by the computer's clock.
 function greeting() {
   const h = new Date().getHours();
   return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
@@ -33,14 +61,28 @@ function initials(name: string) {
   return name.split(" ").map((w) => w[0] ?? "").join("").slice(0, 2).toUpperCase();
 }
 
+// One locker-capacity dial — the ring of 48 little marks with a number in the
+// middle. Used twice: once for the men's pool, once for the women's.
+//
+// There's no chart library here. The ring is 48 short lines drawn one at a
+// time around a circle, and "how full are we" is expressed by how many of them
+// are painted dark. When every locker is taken the whole ring turns red and
+// the number is replaced by the word FULL.
 function Dial({ free, total, label }: { free: number; total: number; label: string }) {
   const full = total > 0 && free === 0;
   const occupied = total - free;
   const TICKS = 48;
+  // How many marks to light up — 30 of 60 lockers occupied lights 24 of 48.
+  // The `total > 0` guard avoids dividing by zero before the lockers load.
   const lit = total > 0 ? Math.round((occupied / total) * TICKS) : 0;
   return (
     <div style={{ background: "#fff", borderRadius: 14, padding: 18, display: "flex", gap: 16, alignItems: "center", flex: 1, minWidth: 250, border: full ? "1.5px solid #b5563a" : "1.5px solid transparent" }}>
       <svg viewBox="0 0 120 120" style={{ width: 104, height: 104, flexShrink: 0 }}>
+        {/* Draw the 48 marks. For each one: work out its angle around the
+            circle (starting at 12 o'clock), then use sine and cosine to turn
+            that angle into two points — one 43 units from the centre, one 54
+            units out — and draw a line between them. That's a tick mark
+            pointing outwards. Marks below the `lit` count are painted dark. */}
         {Array.from({ length: TICKS }, (_, i) => {
           const a = (i / TICKS) * Math.PI * 2 - Math.PI / 2;
           const x1 = 60 + Math.cos(a) * 43, y1 = 60 + Math.sin(a) * 43;
@@ -73,6 +115,8 @@ function Dial({ free, total, label }: { free: number; total: number; label: stri
   );
 }
 
+// A plain white rounded panel. `children` is whatever you put between the
+// <Card> tags — that's how a component wraps other content.
 function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return <div style={{ background: "#fff", borderRadius: 14, padding: 18, ...style }}>{children}</div>;
 }
@@ -80,23 +124,46 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
 const CARD_LABEL: React.CSSProperties = { fontSize: 11.5, fontWeight: 800, letterSpacing: ".16em", color: "#8a7f6d", marginBottom: 10 };
 
 function Home() {
+  // Everything this screen displays, each starting as an empty list until the
+  // server answers. Changing any of these redraws the page.
   const [visits, setVisits] = useState<Visit[]>([]);
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [roster, setRoster] = useState<RosterEntry[]>([]);
+
+  // A deliberately unused value. The empty slot before the comma means "I
+  // don't care what the number is" — we only ever want the side effect of
+  // CHANGING it, which forces a redraw. A timer below bumps it once a minute
+  // so the clock in the header and the "2h 05m" durations tick forward on
+  // their own. The same trick appears in PointOfSale, Checkout and Kitchen.
   const [, setTick] = useState(0); // bumping this re-renders the clock + durations
+
+  // Who's signed in, for the greeting. Read straight from the browser's
+  // notepad — see Shell.tsx, which is what put it there.
   const user: LoggedInUser | null = JSON.parse(localStorage.getItem("user") ?? "null");
 
+  // Ask the server for all three lists at once. They're independent, so they
+  // don't wait for each other — whichever answers first redraws its bit.
   const loadAll = () => {
     authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
     authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
     authFetch(`/orders/open`).then((r) => r.json()).then(setOrders);
   };
 
+  // Runs once, when the dashboard opens. The `[]` at the end is what means
+  // "once, not on every redraw".
   useEffect(() => {
     loadAll();
+    // The staff list is fetched separately because it never changes during a
+    // shift — no need to re-fetch it every time something happens.
     authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
 
+    // Live updates. Each of these is something that could happen on ANOTHER
+    // terminal — someone checked a guest in at the other desk, the kitchen
+    // marked an order ready. Notice every one of them runs the same `refresh`
+    // and none of them look at what the message contains: the message is only
+    // a doorbell saying "something changed", and the answer is always to go
+    // and fetch fresh copies. That's the pattern used across the whole app.
     const refresh = () => loadAll();
     socket.on("visit:checked-in", refresh);
     socket.on("visit:checked-out", refresh);
@@ -105,7 +172,12 @@ function Home() {
     socket.on("orders:changed", refresh);
     socket.on("bill:line-item-added", refresh);
 
+    // Redraw once a minute so the durations don't go stale.
     const timer = setInterval(() => setTick((t) => t + 1), 60000);
+
+    // The tidy-up. React runs this when you navigate away from the dashboard.
+    // Without it, every visit to this page would add another set of listeners
+    // on the same shared connection, and the fetches would multiply.
     return () => {
       socket.off("visit:checked-in", refresh);
       socket.off("visit:checked-out", refresh);
@@ -117,16 +189,20 @@ function Home() {
     };
   }, []);
 
+  // Count lockers in one pool — either all of them, or only the free ones.
   const count = (g: string, status?: string) =>
     lockers.filter((l) => l.gender === g && (!status || l.status === status)).length;
   const freeM = count("MALE", "AVAILABLE"), totalM = count("MALE");
   const freeF = count("FEMALE", "AVAILABLE"), totalF = count("FEMALE");
 
+  // Split the headcount by gender for the little two-tone bar.
   const menIn = visits.filter((v) => v.customer.gender === "MALE").length;
   const womenIn = visits.length - menIn;
 
   const kitchenCount = (s: string) => orders.filter((o) => o.status === s).length;
 
+  // Build the red "at capacity" banner text — empty when there's room, which
+  // is how the banner knows to hide itself.
   const fullPools = [
     ...(totalM > 0 && freeM === 0 ? [`Men at capacity (${totalM}/${totalM})`] : []),
     ...(totalF > 0 && freeF === 0 ? [`Women at capacity (${totalF}/${totalF})`] : []),
@@ -202,6 +278,8 @@ function Home() {
                 </tr>
               </thead>
               <tbody>
+                {/* Only the first 8, to keep the dashboard short — the
+                    "See all →" link above goes to Point of Sale for the rest. */}
                 {visits.slice(0, 8).map((v) => (
                   <tr key={v.id}>
                     <td style={{ padding: "10px 6px", borderBottom: "1px solid #f3ede2", fontWeight: 700, color: "#5c5344" }}>
@@ -245,6 +323,12 @@ function Home() {
           <Card>
             <div style={CARD_LABEL}>CHECKED IN NOW</div>
             <div style={{ fontSize: 34, fontWeight: 800, lineHeight: 1 }}>{visits.length}</div>
+            {/* The two-tone bar. There's no width calculation here — the two
+                halves are just told to take up space in proportion to the two
+                headcounts, and the browser works out the split. The tiny
+                0.0001 is a floor: a count of zero would make the browser fall
+                back to a default width rather than vanishing, so this gives it
+                a number that's technically above zero but invisible. */}
             <div style={{ display: "flex", gap: 4, marginTop: 12 }}>
               <div style={{ height: 7, borderRadius: 4, background: "#4a4236", flex: Math.max(menIn, 0.0001) }} />
               <div style={{ height: 7, borderRadius: 4, background: "#cfc4ae", flex: Math.max(womenIn, 0.0001) }} />

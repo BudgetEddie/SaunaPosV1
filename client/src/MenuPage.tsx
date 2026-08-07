@@ -1,3 +1,32 @@
+// ============================================================================
+// THE MENU EDITOR — what the bathhouse sells. ADMIN ONLY.
+//
+// WHAT IT IS
+//   Everything that appears as a tile on the till, and the categories those
+//   tiles are grouped into. Add items, set prices and tax, upload a photo,
+//   hide something that's run out, and set the house default tax rate.
+//
+//   Changes here reach every terminal within a second — the server broadcasts
+//   "menu:updated" and the till refetches its menu.
+//
+// WHERE IT'S USED
+//   The "/menu" route in client/src/main.tsx. Nothing imports it.
+//   Like Reports, the sidebar hides the link from non-admins and this screen
+//   re-checks, but the server is what actually refuses.
+//
+// WHAT IT TALKS TO   (all in server/src/index.ts, all admin-only)
+//   GET    /categories                 → the whole menu tree
+//   GET    /settings                   → the house default tax rate
+//   POST   /categories                 → add a category
+//   PUT    /categories/:id             → rename / regroup a category
+//   DELETE /categories/:id             → remove an (empty) category
+//   POST   /menu-items                 → add an item
+//   PUT    /menu-items/:id             → save an item
+//   DELETE /menu-items/:id             → delete an item
+//   POST   /menu-items/:id/available   → the On sale / Hidden switch
+//   PUT    /settings                   → save the default tax rate
+// ============================================================================
+
 import { useEffect, useState, type ChangeEvent } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
@@ -5,11 +34,23 @@ import { type Category, type MenuItem } from "./types.ts";
 
 const socket = io("http://localhost:4000");
 
+// The two halves of the menu. Which one a category is in has a real
+// consequence: FOOD_DRINK categories print kitchen tickets, MERCH_SERVICE
+// ones don't. The server sets that automatically from the group.
 const GROUPS = [
   { id: "FOOD_DRINK", label: "Food & drinks", dot: "#7a6a53" },
   { id: "MERCH_SERVICE", label: "Merchandise & services", dot: "#a89a86" },
 ];
 
+// The item currently open in the editor panel.
+//
+// Note the prices and tax are held as TEXT, not numbers. That's because a
+// half-typed "12." isn't a valid number, and forcing it into one as the user
+// types would fight them. It's converted on save instead.
+//
+// Also note `taxPercent`: staff think in "13%", the database stores 0.13. The
+// conversion happens right here at the edge — divided by 100 on save,
+// multiplied by 100 on load — so nothing else has to think about it.
 type Draft = {
   id: number | null;
   categoryId: string;
@@ -52,6 +93,7 @@ const CHIP_BTN: React.CSSProperties = {
 function money(n: number) {
   return `$${n.toFixed(2)}`;
 }
+// A fresh, empty item — new items start on sale and at the house tax rate.
 function blankDraft(categoryId: number, defaultTaxPercent: string): Draft {
   return {
     id: null,
@@ -71,9 +113,9 @@ function MenuPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [defaultTaxPercent, setDefaultTaxPercent] = useState("13.00");
   const [loadedSettings, setLoadedSettings] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState("");                       // item search
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [draft, setDraft] = useState<Draft | null>(null);       // the editor panel
   const [catFormGroup, setCatFormGroup] = useState<string | null>(null);
   const [newCatName, setNewCatName] = useState("");
 
@@ -86,15 +128,20 @@ function MenuPage() {
     if (!isAdmin) return;
     loadMenu();
     authFetch(`/settings`).then((r) => r.json()).then((s) => {
+      // Only take the saved rate the first time. Without this guard, a later
+      // refetch would wipe out a rate being typed but not yet saved.
       if (!loadedSettings) {
         setDefaultTaxPercent((s.taxRate * 100).toFixed(2));
         setLoadedSettings(true);
       }
     });
+    // Another admin (or another tab) editing the menu refreshes this one too.
     socket.on("menu:updated", loadMenu);
     return () => {
       socket.off("menu:updated", loadMenu);
     };
+    // The linter wants more listed here; deliberately left out so this runs
+    // only once rather than on every redraw.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -145,13 +192,28 @@ function MenuPage() {
   // Shrink the picture in the browser before it ever reaches the server: a 4MB
   // phone photo becomes roughly 40KB, which is small enough to keep in the
   // database alongside the item.
+  //
+  // There's no file upload anywhere in this app — no folder of images, nothing
+  // to back up separately. The shrunk photo is turned into a (long) piece of
+  // text and saved in the database like any other field.
+  //
+  // It happens in four steps, each waiting on the one before:
+  //   1. FileReader reads the chosen file off the disk.
+  //   2. An Image object decodes it so we can see how big it is.
+  //   3. A canvas — an off-screen drawing surface — redraws it at 400px.
+  //   4. toDataURL turns that canvas back into text at 80% JPEG quality.
   const onFile = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
+    // Nothing inside here runs immediately — it waits until the file has
+    // actually been read, which is why it's written as nested callbacks.
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
+        // Scale the longest side down to 400px, keeping the proportions.
+        // Math.min with 1 means a photo already smaller is left alone rather
+        // than being blown up.
         const max = 400;
         const scale = Math.min(1, max / Math.max(img.width, img.height));
         const canvas = document.createElement("canvas");
@@ -180,6 +242,8 @@ function MenuPage() {
       alert("Give the item a price.");
       return;
     }
+    // Turn the typed text back into the shapes the database wants — notably
+    // the tax percentage back into a decimal (13 → 0.13).
     const body = {
       categoryId: Number(draft.categoryId),
       name: draft.name.trim(),
@@ -191,6 +255,8 @@ function MenuPage() {
       visitCredits: parseInt(draft.visitCredits, 10) || 0,
       redeemsPass: draft.redeemsPass,
     };
+    // An item with an id already exists, so update it; one without is new.
+    // That's the only difference between the two branches.
     const res = draft.id
       ? await authFetch(`/menu-items/${draft.id}`, {
           method: "PUT",
@@ -207,6 +273,9 @@ function MenuPage() {
     loadMenu();
   };
 
+  // Delete an item from the menu. Past bills are genuinely unaffected: a
+  // charge stores the name and price as text at the moment of sale rather than
+  // pointing back at the menu, so old receipts keep working forever.
   const deleteItem = async () => {
     if (!draft?.id) return;
     if (!confirm("Delete this item? Bills already rung up are unaffected.")) return;
@@ -215,6 +284,9 @@ function MenuPage() {
     loadMenu();
   };
 
+  // The "86 it" switch — hide something that's run out without deleting it.
+  // Hidden items vanish from the till's tiles but keep their price and photo,
+  // ready to be switched back on tomorrow.
   const toggleAvailable = async (item: MenuItem) => {
     await showError(await authFetch(`/menu-items/${item.id}/available`, {
       method: "POST",
@@ -250,12 +322,18 @@ function MenuPage() {
     loadMenu();
   };
 
+  // Remove a category. The server refuses if it still has items in it, so
+  // there's no way to accidentally orphan half the menu.
   const deleteCategory = async (category: Category) => {
     if (!confirm(`Remove the category "${category.name}"?`)) return;
     await showError(await authFetch(`/categories/${category.id}`, { method: "DELETE" }));
     loadMenu();
   };
 
+  // The house tax rate. Note what this does NOT do: it doesn't change anything
+  // already priced. Existing items keep their own rate, and charges already on
+  // bills keep the rate they were sold at. It only sets the starting point for
+  // items created from now on — hence the wording of the confirmation.
   const saveDefaultTax = async () => {
     const rate = (parseFloat(defaultTaxPercent) || 0) / 100;
     const ok = await showError(await authFetch(`/settings`, {
@@ -272,8 +350,12 @@ function MenuPage() {
   const hiddenCount = categories.reduce((n, c) => n + c.items.filter((i) => !i.available).length, 0);
   const anyMatch = categories.some((c) => c.items.some(matches));
 
+  // Which category the item being edited sits in — merchandise and services
+  // get slightly different options in the panel, since they never involve the
+  // kitchen.
   const draftCategory = draft ? categories.find((c) => String(c.id) === draft.categoryId) ?? null : null;
   const isMerch = draftCategory?.group === "MERCH_SERVICE";
+  // A live "with tax, this comes to…" preview while typing a price.
   const draftPrice = parseFloat(draft?.price ?? "") || 0;
   const draftGross = draftPrice * (1 + (parseFloat(draft?.taxPercent ?? "") || 0) / 100);
 
@@ -396,6 +478,11 @@ function MenuPage() {
                           >
                             Rename
                           </button>
+                          {/* Marking a category "Admission" changes how the
+                              till behaves: its tiles swap the guest's entry
+                              charge instead of adding to the tab. Food can
+                              never be an admission, so this is only offered
+                              on the merchandise side. */}
                           {group.id === "MERCH_SERVICE" && (
                             <button
                               onClick={() => saveCategory(category, { isAdmission: !category.isAdmission })}
@@ -404,6 +491,10 @@ function MenuPage() {
                               {category.isAdmission ? "Not admission" : "Admission"}
                             </button>
                           )}
+                          {/* "Move" swaps a category between the two halves.
+                              It's more than cosmetic: moving something into
+                              Food & drinks makes it start printing kitchen
+                              tickets, and moving it out stops that. */}
                           <button
                             onClick={() => saveCategory(category, { group: group.id === "FOOD_DRINK" ? "MERCH_SERVICE" : "FOOD_DRINK" })}
                             style={{ ...CHIP_BTN, border: "none", background: "transparent", color: "#a89a86" }}
@@ -446,6 +537,10 @@ function MenuPage() {
                           <div style={{ flex: "none", fontSize: 15, fontWeight: 800, width: 74, textAlign: "right" }}>
                             {money(item.price)}
                           </div>
+                          {/* The On sale / Hidden switch. stopPropagation is
+                              needed because this sits inside a row that opens
+                              the editor when clicked — without it, toggling
+                              would also open the panel. */}
                           <div
                             onClick={(e) => { e.stopPropagation(); toggleAvailable(item); }}
                             style={{ flex: "none", width: 80, textAlign: "center", fontSize: 10, fontWeight: 800, letterSpacing: .5, textTransform: "uppercase", color: item.available ? "#3f5540" : "#8f3f28", background: item.available ? "#dfeada" : "#f7e4dc", borderRadius: 20, padding: "4px 0", cursor: "pointer" }}
@@ -605,6 +700,18 @@ function MenuPage() {
                 </div>
               </div>
 
+              {/* THE VISIT PASS CONTROLS. These two settings are opposites and
+                  are the easiest thing in the app to confuse:
+
+                    "Visit passes granted when sold" — buying this ADDS passes
+                    to the guest's balance. A 10-visit pack sets this to 10.
+
+                    "This admission redeems a visit pass" — choosing this
+                    SPENDS one of their passes instead of charging money.
+
+                  One is the pack you buy, the other is the entry you get with
+                  it. Never set both on the same item. Only shown for
+                  merchandise and services, since food never involves passes. */}
               {isMerch && (
                 <div style={{ border: "1px solid rgba(43,38,32,.08)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
                   <div style={{ ...LABEL, marginBottom: 0 }}>Advanced</div>

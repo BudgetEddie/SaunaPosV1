@@ -1,19 +1,59 @@
+// ============================================================================
+// THE SIGN-IN PAGE — the steam logo, the name and passphrase, the staff chips.
+//
+// WHAT IT IS
+//   The screen staff see before the app opens. Most of the file's length is
+//   the artwork: a hand-drawn steam burst that shimmers, drawn in SVG.
+//
+// WHERE IT'S USED
+//   Only by client/src/Shell.tsx, which shows this INSTEAD of the whole app
+//   whenever nobody is signed in. It has no address of its own — you can't
+//   navigate to "/login", because there isn't one.
+//
+//   It doesn't sign anyone in by itself. When the server accepts the
+//   passphrase, this calls the `onLogin` function Shell handed down, and
+//   Shell does the remembering.
+//
+// WHAT IT TALKS TO
+//   GET  /login-roster  → the list of accounts, for the quick-sign-in chips
+//   POST /login         → name + passphrase, gets a token back
+//   Both live in server/src/index.ts, and both are deliberately open to
+//   people who aren't signed in yet — they're defined above the guard line.
+//
+//   This is the one file that uses plain `fetch` instead of `authFetch`:
+//   there's no token to attach until this screen succeeds.
+// ============================================================================
+
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { API, type LoggedInUser } from "./authFetch.ts";
 
+// One staff account, as the server describes it. (The same little shape is
+// re-declared in Home, Checkout, Kitchen and CustomerDirectory — they all show
+// the same row of "on shift" avatars.)
 type RosterEntry = { username: string; displayName: string; role: string };
 
 // Deterministic "hand-drawn" steam rays — same math as the design mockup.
 // The seeded random means the burst looks identical on every load.
+//
+// Working out the shape of the logo: `n` lines fanning out from a centre
+// point, each a slightly different length and thickness with a slight bend,
+// so it looks drawn by hand rather than by a compass.
+//
+// The trick is that `rand()` isn't really random. It's a formula that produces
+// a scrambled-looking but completely repeatable sequence from the starting
+// number 7.3 — so the "hand-drawn" wobble is the SAME wobble every time the
+// page loads, instead of the logo redrawing itself differently on each visit.
 function buildRays(n: number) {
   let s = 7.3;
   const rand = () => {
     s = Math.sin(s) * 43758.5453;
     return s - Math.floor(s);
   };
+  // Centre of the drawing, and how far from it each ray starts.
   const cx = 100, cy = 100, inner = 16;
   const rays: { d: string; w: string }[] = [];
   for (let i = 0; i < n; i++) {
+    // Space the rays evenly around a full circle, starting at 12 o'clock.
     const a = (i / n) * Math.PI * 2 - Math.PI / 2;
     const len = 46 + rand() * 20;
     const bend = (rand() - 0.5) * 10;
@@ -23,6 +63,9 @@ function buildRays(n: number) {
     const x2 = cx + nx * len, y2 = cy + ny * len;
     const mx = cx + (nx * (inner + len)) / 2 + px * bend;
     const my = cy + (ny * (inner + len)) / 2 + py * bend;
+    // `d` is the drawing instruction in SVG's own shorthand: Move to the
+    // start, then draw a Quadratic curve bending through the middle point to
+    // the end. `w` is how thick to draw it.
     rays.push({
       d: `M${x1.toFixed(1)} ${y1.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`,
       w: (2.6 + rand() * 2.2).toFixed(1),
@@ -31,26 +74,48 @@ function buildRays(n: number) {
   return rays;
 }
 
+// "Anna Petrova" → "AP", for the little round avatar chips.
 function initials(name: string) {
   return name.split(" ").map((w) => w[0] ?? "").join("").slice(0, 2).toUpperCase();
 }
 
+// `onLogin` is a function passed down from Shell.tsx. Calling it is how this
+// screen reports success upward — it's the only way a child component can tell
+// its parent anything.
 function Login({ onLogin }: { onLogin: (user: LoggedInUser, token: string) => void }) {
-  const [attendant, setAttendant] = useState("");
-  const [pin, setPin] = useState("");
-  const [status, setStatus] = useState("");
-  const [roster, setRoster] = useState<RosterEntry[]>([]);
+  const [attendant, setAttendant] = useState("");   // the name box
+  const [pin, setPin] = useState("");               // the passphrase box
+  const [status, setStatus] = useState("");         // the italic line under the button
+  const [roster, setRoster] = useState<RosterEntry[]>([]);  // staff for the chips
+
+  // Build the steam rays once and reuse them. Without useMemo they'd be
+  // recalculated on every keystroke in the passphrase box — harmless, but
+  // pointless work.
   const rays = useMemo(() => buildRays(12), []);
 
+  // Runs once, when the login screen first appears.
   useEffect(() => {
+    // Fetch the staff list for the quick-sign-in chips. The empty `.catch`
+    // means "if the server is down, just skip the chips" — the name and
+    // passphrase boxes still work, so there's nothing to warn about yet.
     fetch(`${API}/login-roster`).then((r) => r.json()).then(setRoster).catch(() => {});
+
+    // If this computer is set to reduce motion (an accessibility setting for
+    // people who find animation uncomfortable), physically rip the animation
+    // tags out of the steam artwork. Reaching into the page like this is
+    // unusual in React — it's done here because the shimmer is built from raw
+    // SVG <animate> tags that React isn't managing.
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       document.querySelectorAll(".lg-page animate").forEach((el) => el.remove());
     }
   }, []);
 
+  // Runs when the form is submitted — the button, or Enter in either box.
   const onSubmit = async (e: FormEvent) => {
+    // Stop the browser's built-in behaviour of reloading the whole page on
+    // submit, which would throw away everything React is holding.
     e.preventDefault();
+
     const who = attendant.trim();
     if (!who) {
       setStatus("Enter a name or staff number to continue.");
@@ -58,20 +123,29 @@ function Login({ onLogin }: { onLogin: (user: LoggedInUser, token: string) => vo
     }
     setStatus("Warming the register…");
     try {
+      // Ask the server to check the passphrase. It compares against a
+      // scrambled version stored in the database — the real passphrase is
+      // never saved anywhere, so not even an admin can look it up.
       const res = await fetch(`${API}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: who, password: pin }),
       });
+      // A refusal is a normal answer, not a crash — show what the server said.
       if (!res.ok) {
         const { error } = await res.json();
         setStatus(error ?? "Wrong name or passphrase.");
         return;
       }
+      // Accepted. `token` is the wristband every later request will carry.
       const { token, user } = await res.json();
       setStatus(`Register open — have a good shift, ${user.displayName.split(" ")[0]}.`);
+      // A deliberate 700ms pause so the greeting is actually readable before
+      // the screen changes. Handing the token to Shell is what opens the app.
       setTimeout(() => onLogin(user, token), 700);
     } catch {
+      // We only land here if the request never arrived at all — a wrong
+      // passphrase is handled above. So this really does mean "no server".
       setStatus("Can't reach the server — is it running?");
     }
   };
@@ -82,6 +156,10 @@ function Login({ onLogin }: { onLogin: (user: LoggedInUser, token: string) => vo
       <div style={{ position: "absolute", inset: 0, backgroundImage: "linear-gradient(rgba(244,239,231,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(244,239,231,.09) 1px,transparent 1px)", backgroundSize: "44px 44px", maskImage: "radial-gradient(120% 80% at 50% 40%,#000 30%,transparent 78%)", WebkitMaskImage: "radial-gradient(120% 80% at 50% 40%,#000 30%,transparent 78%)", opacity: 0.5, pointerEvents: "none" }} />
 
       {/* SVG filters: the line-boil turbulence */}
+      {/* These two are invisible themselves — they're reusable image effects,
+          defined once here and referenced by name further down. "boil" jitters
+          the artwork a few times a second so the ink looks alive; it's what
+          the reduced-motion check above strips out. */}
       <svg width="0" height="0" aria-hidden="true" style={{ position: "absolute" }}>
         <defs>
           <filter id="boil-strong" x="-30%" y="-30%" width="160%" height="160%">
@@ -111,6 +189,9 @@ function Login({ onLogin }: { onLogin: (user: LoggedInUser, token: string) => vo
         <div style={{ position: "relative", zIndex: 1 }}>
           <svg viewBox="0 0 200 200" role="img" aria-label="Rising steam" style={{ width: 132, height: 132 }}>
             <g filter="url(#boil-strong)">
+              {/* Draw each ray buildRays() worked out above. `key` isn't a
+                  visible attribute — React needs a stable label per item in
+                  any repeated list to track them between redraws. */}
               <g stroke="#b5563a" fill="none" strokeLinecap="round">
                 {rays.map((r, i) => (
                   <path key={i} d={r.d} strokeWidth={r.w} />
@@ -156,6 +237,8 @@ function Login({ onLogin }: { onLogin: (user: LoggedInUser, token: string) => vo
         </form>
 
         {/* quick sign-in: the on-shift chips, now backed by the real accounts */}
+        {/* Tapping a chip only fills in the name box — it never skips the
+            passphrase. It's a shortcut for typing, not a way in. */}
         {roster.length > 0 && (
           <div style={{ marginTop: 22 }}>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".2em", textTransform: "uppercase", color: "rgba(244,239,231,.38)", marginBottom: 10 }}>Quick sign-in</div>

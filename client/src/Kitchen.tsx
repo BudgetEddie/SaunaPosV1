@@ -1,10 +1,43 @@
+// ============================================================================
+// THE KITCHEN BOARD — the cooks' screen.
+//
+// WHAT IT IS
+//   Three columns that a ticket moves through left to right:
+//     Queue  →  Prep  →  Ready  →  (gone)
+//   Each card is one guest's order, showing their locker number so it can be
+//   delivered. Tapping the button on a card pushes it to the next column.
+//
+//   It also has a "New Order" composer, for orders taken at the kitchen
+//   counter rather than at the till. That sends to exactly the same place the
+//   till does, so the charge lands on the guest's tab either way.
+//
+// WHERE IT'S USED
+//   The "/kitchen" route in client/src/main.tsx. Nothing imports it.
+//   Home.tsx shows a summary of these three columns and links here.
+//
+// WHAT IT TALKS TO   (all in server/src/index.ts)
+//   GET    /orders/open              → the three columns
+//   GET    /visits/active            → guest search in the composer
+//   GET    /categories               → the menu, filtered to kitchen items
+//   GET    /login-roster             → the "on shift" avatars
+//   POST   /orders/:id/status        → move a ticket to the next column
+//   DELETE /order-items/:id          → dismiss a canceled item
+//   POST   /visits/:id/confirm-order → the composer (same as PointOfSale uses)
+// ============================================================================
+
 import { useEffect, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { type Category, type Visit } from "./types.ts";
 
+// The live line to the server. This screen depends on it more than any other —
+// it's how an order rung up at the front desk appears here seconds later
+// without anyone touching this computer.
 const socket = io("http://localhost:4000");
 
+// `canceled` is the important one. An item pulled from a bill isn't deleted
+// from a ticket that's already being cooked — it's flagged, so the cook can
+// see it was cancelled and stop making it, then dismiss the card themselves.
 type OrderItemRow = { id: number; name: string; note: string | null; canceled: boolean };
 type KitchenOrder = {
   id: number;
@@ -21,6 +54,12 @@ type RosterEntry = { username: string; displayName: string; role: string };
 type CartLine = { qty: number; note: string; name: string; price: number; taxRate: number };
 type Cart = Record<number, CartLine>;
 
+// The board, described as data rather than written out three times. Each entry
+// says which tickets it holds, what its button says, and where that button
+// sends them. The three columns on screen are drawn by looping over this.
+//
+// "Mark Picked Up" moves a ticket to COMPLETE, which isn't a column — the
+// server stops sending completed orders, so the card simply disappears.
 const COLUMNS = [
   { status: "QUEUED", label: "Queue", dot: "#a89a86", next: "IN_PROGRESS", action: "Start Prep", bg: "#7a6a53", ink: "#fff", border: "none" },
   { status: "IN_PROGRESS", label: "Prep", dot: "#7a6a53", next: "READY", action: "Mark Ready", bg: "#5f7a5a", ink: "#fff", border: "none" },
@@ -63,14 +102,20 @@ function groupOrderItems(items: OrderItemRow[]) {
 }
 
 function Kitchen() {
-  const [orders, setOrders] = useState<KitchenOrder[]>([]);
+  const [orders, setOrders] = useState<KitchenOrder[]>([]);   // the board
   const [roster, setRoster] = useState<RosterEntry[]>([]);
-  const [visits, setVisits] = useState<Visit[]>([]);
+  const [visits, setVisits] = useState<Visit[]>([]);          // guests, for the composer
   const [categories, setCategories] = useState<Category[]>([]);
+
+  // ---- the "New Order" composer ----
   const [composerOpen, setComposerOpen] = useState(false);
-  const [guestQuery, setGuestQuery] = useState("");
+  const [guestQuery, setGuestQuery] = useState("");           // guest search box
   const [guestVisitId, setGuestVisitId] = useState<number | null>(null);
   const [cart, setCart] = useState<Cart>({});
+
+  // Redrawn every 20 seconds so the "waiting 6 min" clocks on each ticket
+  // creep upward. Faster than the other screens because a cook watching a
+  // ticket age wants it accurate.
   const [, setTick] = useState(0);
 
   const loadOrders = () => authFetch(`/orders/open`).then((r) => r.json()).then(setOrders);
@@ -83,6 +128,10 @@ function Kitchen() {
     loadMenu();
     authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
 
+    // "orders:changed" is the one that matters here — it fires whenever an
+    // order is rung up at the till, advanced on another kitchen screen, or
+    // cancelled. As everywhere, the message itself is ignored; it just means
+    // "refetch the board".
     const refresh = () => { loadOrders(); loadVisits(); };
     socket.on("orders:changed", refresh);
     socket.on("visit:checked-in", loadVisits);
@@ -100,6 +149,8 @@ function Kitchen() {
     };
   }, []);
 
+  // Push a ticket one column to the right. The server broadcasts the change,
+  // so every other kitchen screen and the dashboard update too.
   const advance = async (order: KitchenOrder, status: string) => {
     await authFetch(`/orders/${order.id}/status`, {
       method: "POST",
@@ -109,6 +160,10 @@ function Kitchen() {
     loadOrders();
   };
 
+  // The cook acknowledging a cancelled item and clearing it off the card. The
+  // server refuses to remove anything that wasn't actually cancelled, so this
+  // can't be used to make a real order disappear. If it was the last item on
+  // the ticket, the whole card goes with it.
   const dismissCanceled = async (itemId: number) => {
     await authFetch(`/order-items/${itemId}`, { method: "DELETE" });
     loadOrders();
@@ -140,13 +195,21 @@ function Kitchen() {
     });
   };
 
+  // Send the composer's order. This hits the exact same address the till uses,
+  // so a coffee ordered at the kitchen counter lands on the guest's tab just
+  // as if it had been rung up at the front desk — they pay for it at checkout
+  // either way. That's why the kitchen needs to pick a guest first.
   const submitOrder = async (e: FormEvent) => {
     e.preventDefault();
     if (!guestVisitId || cartLines.length === 0) return;
+    // Same fan-out as the till: "Tea ×3" becomes three separate entries,
+    // because that's one row per drink on the bill and three things to make.
     const items = cartLines.flatMap((line) =>
       Array.from({ length: line.qty }, () => ({
         name: line.name,
         amount: line.price,
+        // Always true here — everything orderable from this screen is food or
+        // drink, so it always produces a ticket.
         isKitchen: true,
         visitCredits: 0,
         taxRate: line.taxRate,
@@ -171,6 +234,9 @@ function Kitchen() {
   const cartQty = cartLines.reduce((n, l) => n + l.qty, 0);
   const cartTotal = cartLines.reduce((sum, l) => sum + l.price * l.qty, 0);
 
+  // Guest search inside the composer. Only checked-in guests can be searched —
+  // an order has to attach to an open visit, since that's what carries the tab.
+  // Capped at 6 results to keep the dropdown short.
   const chosen = visits.find((v) => v.id === guestVisitId) ?? null;
   const gq = guestQuery.trim().toLowerCase();
   const guestResults = gq
@@ -179,6 +245,7 @@ function Kitchen() {
       ).slice(0, 6)
     : [];
 
+  // Only categories that print a ticket. No point offering towels here.
   const kitchenCategories = categories.filter((c) => c.isKitchen);
   const now = new Date();
 
@@ -231,6 +298,8 @@ function Kitchen() {
       </div>
 
       {/* board */}
+      {/* The three columns, drawn by looping over COLUMNS. Each one filters the
+          same list of orders down to the ones at its stage. */}
       <div style={{ padding: "22px 26px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18, alignItems: "start" }}>
         {COLUMNS.map((col) => {
           const cards = orders.filter((o) => o.status === col.status);
@@ -250,10 +319,17 @@ function Kitchen() {
 
               <div className="k-col" style={{ display: "flex", flexDirection: "column", gap: 11, overflowY: "auto", maxHeight: 560 }}>
                 {cards.map((order) => {
+                  // How long this ticket has been waiting. Past 15 minutes the
+                  // badge turns red — a nudge, not a rule.
                   const mins = minutesSince(order.createdAt);
                   const late = mins >= 15;
+                  // Split the ticket: things still to make, and things pulled
+                  // from the bill. Cancelled items are shown separately in red
+                  // rather than hidden, so a cook mid-preparation finds out.
                   const active = order.items.filter((i) => !i.canceled);
                   const canceled = order.items.filter((i) => i.canceled);
+                  // Allergies and warnings from the guest's profile, surfaced
+                  // here so the kitchen sees them without looking anyone up.
                   const notes = order.visit.customer.notes;
                   return (
                     <div key={order.id} style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 14, padding: 15, boxShadow: "0 1px 2px rgba(43,38,32,.04)" }}>
@@ -324,6 +400,9 @@ function Kitchen() {
                         </div>
                       )}
 
+                      {/* No advance button on a ticket where everything has
+                          been cancelled — there's nothing left to cook, so the
+                          only sensible action is dismissing the items above. */}
                       {active.length > 0 && (
                         <button
                           onClick={() => advance(order, col.next)}
@@ -348,6 +427,10 @@ function Kitchen() {
       </div>
 
       {/* composer */}
+      {/* The "New Order" panel, for orders taken at the kitchen counter. Two
+          steps: find the guest (they must be checked in), then tap items.
+          Sending it goes to the same place the till does, so the charge
+          appears on their tab. */}
       {composerOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(43,38,32,.42)", padding: 34, zIndex: 30, animation: "fadeIn .18s ease" }}>
           <form

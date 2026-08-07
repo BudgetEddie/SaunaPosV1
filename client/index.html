@@ -1,4 +1,19 @@
 <!doctype html>
+<!--
+  =============================================================================
+  THE EMPTY PAGE THE WHOLE APP IS DRAWN INTO.
+
+  This is the only actual web page in the project. Everything staff ever see —
+  the till, the kitchen board, the reports — is built by React inside the one
+  empty <div> near the bottom.
+
+  Which is why there's so little here. There's no menu, no sidebar, no content:
+  all of that is created after the page loads, by client/src/main.tsx.
+
+  You'd only edit this file to change the browser tab's title or icon, or to
+  load a font. Everything else belongs in the .tsx files.
+  =============================================================================
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -6,11 +21,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- The app's typeface, fetched from Google. Note it's loaded from the
+         internet, so the app looks slightly different if the till is offline —
+         the browser falls back to a system font. -->
     <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500;1,600&display=swap" rel="stylesheet" />
+    <!-- What appears on the browser tab. -->
     <title>Banya #3 — POS</title>
   </head>
   <body>
+    <!-- THE EMPTY BOX. React finds this by its id and builds the entire app
+         inside it — see the first line of createRoot() in main.tsx. -->
     <div id="root"></div>
+    <!-- The starting pistol: load main.tsx, which pulls in everything else. -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

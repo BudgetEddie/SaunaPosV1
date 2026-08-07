@@ -1,28 +1,83 @@
+// ============================================================================
+// THE DATABASE BLUEPRINT — every fact this business stores, and how the facts
+// connect to each other.
+//
+// WHAT IT IS
+//   Not code that runs. It's a description, and two things are built from it:
+//     1. The real database tables (via the migration files in migrations/).
+//     2. The `prisma.customer.findMany(...)` style commands the server uses.
+//   Change something here and you must create a migration, or the description
+//   and the actual database drift apart.
+//
+// WHERE IT'S USED
+//   server/src/index.ts is the only thing that reads the database.
+//   client/src/types.ts is the client's hand-written echo of these shapes —
+//   if you add a field the screens need, it has to be added there too.
+//
+// HOW IT ALL HANGS TOGETHER
+//
+//     Customer ──< Visit >── Locker
+//                    │
+//                    ├──── Bill ──< BillLineItem      (what they owe)
+//                    │
+//                    └──< Order ──< OrderItem         (what the kitchen makes)
+//
+//     Category ──< MenuItem        (the catalogue, standing apart)
+//
+//   A VISIT is the hub: one person, one locker, one stay. It has exactly one
+//   BILL, and any number of kitchen ORDERS.
+//
+//   Note the menu is NOT connected to bills. When something is sold, its name,
+//   price and tax rate are COPIED onto the charge as plain values. That's
+//   deliberate: it means changing a price — or deleting an item entirely —
+//   can never alter what an old receipt says.
+//
+// (Unfamiliar with tables, fields and migrations? See CODE-GUIDE.md.)
+// ============================================================================
+
+// Turns this description into the typed commands the server writes.
 generator client {
   provider = "prisma-client-js"
 }
 
+// Which database, and where. The address lives in server/.env, out of version
+// control, because it contains the password.
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// FIXED LISTS OF CHOICES
+//
+// An "enum" is a field that may only ever hold one of these exact words. The
+// database itself refuses anything else, so a typo can't quietly create a
+// locker in a third gender pool or an order in a status nothing recognises.
+// ---------------------------------------------------------------------------
+
+// The two halves of the menu. FOOD_DRINK is what the kitchen cooks — that
+// alone decides whether selling something prints a ticket.
 enum MenuGroup {
   FOOD_DRINK
   MERCH_SERVICE
 }
 
+// Used for both guests and lockers, because lockers are split into a men's
+// pool and a women's pool and a guest may only use their own.
 enum Gender {
   MALE
   FEMALE
 }
 
+// A locker is free, in use, or out of service.
 enum LockerStatus {
   AVAILABLE
   OCCUPIED
   MAINTENANCE
 }
 
+// How a bill was settled. Only CASH and CARD can be chosen at checkout — the
+// other two exist in the data but aren't offered as buttons.
 enum PaymentMethod {
   CASH
   CARD
@@ -30,6 +85,8 @@ enum PaymentMethod {
   VISIT_PASS
 }
 
+// The four stages of a kitchen ticket, in order. The Kitchen screen's three
+// columns are the first three; reaching COMPLETE removes the card.
 enum OrderStatus {
   QUEUED
   IN_PROGRESS
@@ -37,73 +94,120 @@ enum OrderStatus {
   COMPLETE
 }
 
+// ADMIN can see the takings, edit the menu, void charges and give refunds.
+// STAFF can do everything else — check people in, take orders, take payment.
 enum Role {
   ADMIN
   STAFF
 }
 
+// A staff login. Created by prisma/seed-users.ts, never through the app —
+// there's no "add a user" screen.
 model User {
   id           Int      @id @default(autoincrement())
-  username     String   @unique
-  displayName  String
+  username     String   @unique // lowercased before saving; no two the same
+  displayName  String // the friendly name shown on screen
   role         Role     @default(STAFF)
+  // NOT the passphrase. A scrambled version of it that can be checked against
+  // but never turned back — so nobody, including an admin with full database
+  // access, can read what anyone's passphrase actually is.
   passwordHash String
   createdAt    DateTime @default(now())
 }
 
+// House-wide configuration. There is exactly ONE of these, always id 1 — a
+// single scratchpad row rather than a list of anything.
 model Settings {
-  id                      Int   @id @default(1)
-  taxRate                 Float @default(0.13)
-  defaultAdmissionItemId  Int?
+  id                     Int   @id @default(1)
+  // The default tax rate as a decimal: 0.13 means 13%. Only a STARTING POINT
+  // for new menu items; it never changes anything already priced or sold.
+  taxRate                Float @default(0.13)
+  // Which menu item to charge automatically at check-in. The `?` means it can
+  // be empty, in which case staff pick an admission by hand.
+  //
+  // Note this is a loose number, not a proper link — deleting that menu item
+  // would leave this pointing at nothing.
+  defaultAdmissionItemId Int?
 }
 
+// A menu section: "Drinks", "Admission", "Massage".
 model Category {
   id          Int        @id @default(autoincrement())
-  name        String     @unique
+  name        String     @unique // two categories can't share a name
   group       MenuGroup  @default(FOOD_DRINK)
+  // Selling from here prints a kitchen ticket. Set automatically from `group`
+  // by the server — Food & drinks means yes, everything else means no.
   isKitchen   Boolean    @default(false)
+  // These are entry charges. Picking one at the till REPLACES the guest's
+  // existing entry charge rather than adding to their tab.
   isAdmission Boolean    @default(false)
-  items       MenuItem[]
+  items       MenuItem[] // the items inside this section
 }
 
+// One sellable thing. The catalogue only — see the note at the top about why
+// nothing here is linked to what's actually on a bill.
 model MenuItem {
   id           Int      @id @default(autoincrement())
   categoryId   Int
   category     Category @relation(fields: [categoryId], references: [id])
   name         String
-  price        Float
-  description  String?
+  price        Float // before tax
+  description  String? // shown as a tooltip at the till
+  // This item's own tax rate, as a decimal. Copied onto each charge at the
+  // moment of sale, which is what allows one bill to mix 13%, 5% and 0%.
   taxRate      Float    @default(0.13)
+  // The photo, stored as a (long) piece of text rather than a file — see the
+  // shrinking code in client/src/MenuPage.tsx. Means no upload folder to back
+  // up separately, at the cost of a chunky database row.
   imageData    String?
+  // The "86 it" switch. Hidden items keep everything but vanish from the till.
   available    Boolean  @default(true)
+  // THE TWO PASS FIELDS — opposites, and the easiest thing here to confuse:
+  //   visitCredits — buying this GRANTS this many passes (a 10-pack: 10)
+  //   redeemsPass  — choosing this SPENDS one of the guest's passes
+  // One is the pack you buy; the other is the entry you get with it. Never set
+  // both on the same item.
   visitCredits Int      @default(0)
   redeemsPass  Boolean  @default(false)
 }
 
+// A guest. The `?` fields are optional — only a name and gender are required,
+// so the desk can sign someone up in seconds.
 model Customer {
   id               Int       @id @default(autoincrement())
   firstName        String
   lastName         String
+  // Required, because it decides which locker pool they can use. The server
+  // refuses to change it while they're mid-visit, since they'd be holding a
+  // locker from the wrong one.
   gender           Gender
   phone            String?
   email            String?
   dateOfBirth      DateTime?
   address          String?
+  // Allergies, warnings, preferences. Shown as a red pill at the till AND on
+  // kitchen tickets, so it's the field that actually gets read.
   notes            String?
+  // How many prepaid entries they have banked. Goes UP when they buy a pack
+  // (immediately), DOWN when a pass-funded visit is checked out.
   visitPassBalance Int       @default(0)
   createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  updatedAt        DateTime  @updatedAt // set automatically on every change
   visits           Visit[]
 }
 
+// A physical locker in the building. Created once by prisma/seed.ts (120 of
+// them) and then just changes status as guests come and go.
 model Locker {
   id     Int          @id @default(autoincrement())
-  number String
-  gender Gender
+  number String // "M07", "F42" — what's on the door
+  gender Gender // which pool it belongs to
   status LockerStatus @default(AVAILABLE)
-  visits Visit[]
+  visits Visit[] // every stay that has ever used it
 }
 
+// ONE PERSON'S STAY — the hub everything else hangs off. Created at check-in,
+// closed at check-out.
 model Visit {
   id          Int       @id @default(autoincrement())
   customerId  Int
@@ -111,51 +215,84 @@ model Visit {
   lockerId    Int
   locker      Locker    @relation(fields: [lockerId], references: [id])
   checkInAt   DateTime  @default(now())
+  // Empty means they're still in the building. This one field is what every
+  // "who's here now" query in the app looks at.
   checkOutAt  DateTime?
+  // This stay's entry is being paid with a prepaid pass rather than money. The
+  // balance isn't actually reduced until check-out.
   redeemsPass Boolean   @default(false)
-  bill        Bill?
-  orders      Order[]
+  bill        Bill? // exactly one tab (see the @unique on Bill.visitId)
+  orders      Order[] // any number of kitchen tickets
 }
 
+// A kitchen ticket — one card on the Kitchen board.
 model Order {
   id        Int         @id @default(autoincrement())
   visitId   Int
   visit     Visit       @relation(fields: [visitId], references: [id])
   status    OrderStatus @default(QUEUED)
-  createdAt DateTime    @default(now())
+  createdAt DateTime    @default(now()) // drives the "waiting 6 min" clock
   items     OrderItem[]
 }
 
+// One thing to make. Note there's no price here — the money side lives on the
+// bill; this is purely the cooking instruction.
 model OrderItem {
   id       Int     @id @default(autoincrement())
   orderId  Int
   order    Order   @relation(fields: [orderId], references: [id])
+  // Matched against BillLineItem.description BY TEXT when a charge is voided —
+  // there's no id linking the two.
   name     String
-  note     String?
+  note     String? // "extra hot", "no onions"
+  // A pulled item isn't deleted from a ticket already being cooked — it's
+  // flagged, shown struck through in red, and the cook dismisses it once
+  // they've seen it.
   canceled Boolean @default(false)
 }
 
+// THE TAB for one visit. Opened at check-in, closed at check-out.
 model Bill {
-  id            Int             @id @default(autoincrement())
-  visitId       Int             @unique
-  visit         Visit           @relation(fields: [visitId], references: [id])
+  id            Int            @id @default(autoincrement())
+  // `@unique` here is what enforces "one bill per visit" — the database itself
+  // refuses to let a visit have two.
+  visitId       Int            @unique
+  visit         Visit          @relation(fields: [visitId], references: [id])
   lineItems     BillLineItem[]
-  taxRate       Float           @default(0.13)
+  // The house rate as it stood at check-in, kept as a record. NOT what the
+  // maths uses — that's the rate on each charge below.
+  taxRate       Float          @default(0.13)
+  // All empty until check-out. Once `paidAt` is set the bill is closed:
+  // charges can no longer be voided, and undoing it means a refund.
   paymentMethod PaymentMethod?
   paidAt        DateTime?
+  // A refund is a STAMP, not a deletion. The charges all stay, so a reprinted
+  // receipt still shows what was sold and that the money went back.
   refundedAt    DateTime?
   refundReason  String?
-  createdAt     DateTime        @default(now())
+  createdAt     DateTime       @default(now())
 }
 
+// ONE CHARGE on a tab. Three teas are three of these, not one with a quantity —
+// the screens group them for display, but the data stays one row per unit.
 model BillLineItem {
   id                  Int      @id @default(autoincrement())
   billId              Int
   bill                Bill     @relation(fields: [billId], references: [id])
+  // Plain text copied from the menu item at the moment of sale, NOT a link to
+  // it. This is why deleting an item or changing its price can never alter an
+  // old receipt. It's also what kitchen items are matched against by name.
   description         String
-  amount              Float
+  amount              Float // before tax
+  // THE RATE THAT ACTUALLY COUNTS. Frozen here at the moment of sale, so a
+  // receipt always shows the tax charged on the day. Note the default is 0,
+  // not 0.13 — anything saved without a rate sells tax-free.
   taxRate             Float    @default(0)
+  // This is the entry fee. There's at most one per bill, it can be swapped but
+  // not voided, and it's marked with a * on printed receipts.
   isAdmission         Boolean  @default(false)
+  // How many passes this sale added to the guest's balance. Kept so voiding
+  // the charge can take exactly those passes back off again.
   visitCreditsGranted Int      @default(0)
   createdAt           DateTime @default(now())
 }
