@@ -29,7 +29,7 @@
 //   POST /visits/:id/change-locker     → move a guest to a different locker
 // ============================================================================
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
@@ -364,6 +364,20 @@ function PointOfSale() {
   const [takeoutOpen, setTakeoutOpen] = useState(false);
   const [takeoutName, setTakeoutName] = useState("");
   const [takeoutPaying, setTakeoutPaying] = useState(false);
+  // Same idea as takeoutPaying, for the guest till: true while the add-to-tab
+  // request is in the air, so a second tap can't send the order twice.
+  //
+  // TWO of them, and the ref is the one that actually guards. State is not
+  // enough on its own: two taps in the same tick both run against the same
+  // render, where `addingToTab` is still false — setAddingToTab schedules an
+  // update, it doesn't change the value this closure already captured. A ref
+  // changes the instant it's assigned, so the second call sees it. Tested: with
+  // state alone, a double-tap still put two teas on the bill.
+  //
+  // The state is still needed — it's what re-renders the button into its
+  // disabled "…" form. The ref can't do that; refs don't trigger a redraw.
+  const addingToTabRef = useRef(false);
+  const [addingToTab, setAddingToTab] = useState(false);
   const [takeoutDone, setTakeoutDone] = useState<{ number: number; total: number } | null>(null);
   const [customName, setCustomName] = useState("");
   const [customAmount, setCustomAmount] = useState("");
@@ -500,9 +514,16 @@ function PointOfSale() {
     setJustAdded(false);
     setCart((prev) => {
       const next = { ...prev };
-      const qty = (next[line.id]?.qty ?? 0) + delta;
+      const existing = next[line.id];
+      const qty = (existing?.qty ?? 0) + delta;
       if (qty <= 0) delete next[line.id];
-      else next[line.id] = { ...line, qty };
+      // Keep any note already typed against this line. Re-tapping a menu tile
+      // arrives here with a freshly built line whose note is "" — without this,
+      // a "no peanuts" typed a moment ago would be wiped, silently, with the
+      // quantity going up as if nothing happened. The − and + buttons pass the
+      // live cart line instead, so their note is already right and this line
+      // changes nothing for them.
+      else next[line.id] = { ...line, qty, note: line.note || existing?.note || "" };
       return next;
     });
   };
@@ -575,35 +596,49 @@ function PointOfSale() {
   // browser; this turns the cart into actual charges on the tab and, for food
   // and drink, an actual ticket on the kitchen board.
   const confirmOrder = async () => {
-    if (!selected || cartLines.length === 0) return;
-    // The cart says "Tea ×3", but a bill has always been one row per drink,
-    // and the kitchen needs three separate things to make. So each line is
-    // fanned back out into `qty` copies of itself before sending.
-    const items = cartLines.flatMap((line) =>
-      Array.from({ length: line.qty }, () => ({
-        name: line.name,
-        amount: line.price,
-        isKitchen: line.isKitchen,
-        visitCredits: line.visitCredits,
-        taxRate: line.taxRate,
-        note: line.note,
-      }))
-    );
-    const ok = await showError(await authFetch(`/visits/${selected.id}/confirm-order`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items }),
-    }));
-    if (!ok) return;
-    // Empty the cart and flash the button green for a couple of seconds, so
-    // there's visible confirmation the tab was actually updated.
-    setCart({});
-    setJustAdded(true);
-    setTimeout(() => setJustAdded(false), 2200);
-    // Refetch so the tab total updates immediately. The server also broadcasts
-    // the change, so this screen often fetches twice — harmless, and it means
-    // the total is right even if the broadcast is slow.
-    loadVisits();
+    // addingToTabRef is the double-tap guard. Without it, two taps inside the
+    // request's round trip both get through and every item lands on the bill
+    // twice — real money, silently. It has to be the REF that's tested here,
+    // not the state: see the note where the two are declared.
+    if (!selected || cartLines.length === 0 || addingToTabRef.current) return;
+    addingToTabRef.current = true;
+    setAddingToTab(true);
+    try {
+      // The cart says "Tea ×3", but a bill has always been one row per drink,
+      // and the kitchen needs three separate things to make. So each line is
+      // fanned back out into `qty` copies of itself before sending.
+      const items = cartLines.flatMap((line) =>
+        Array.from({ length: line.qty }, () => ({
+          name: line.name,
+          amount: line.price,
+          isKitchen: line.isKitchen,
+          visitCredits: line.visitCredits,
+          taxRate: line.taxRate,
+          note: line.note,
+        }))
+      );
+      const ok = await showError(await authFetch(`/visits/${selected.id}/confirm-order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      }));
+      if (!ok) return;
+      // Empty the cart and flash the button green for a couple of seconds, so
+      // there's visible confirmation the tab was actually updated.
+      setCart({});
+      setJustAdded(true);
+      setTimeout(() => setJustAdded(false), 2200);
+      // Refetch so the tab total updates immediately. The server also broadcasts
+      // the change, so this screen often fetches twice — harmless, and it means
+      // the total is right even if the broadcast is slow.
+      loadVisits();
+    } finally {
+      // `finally` runs whether the request succeeded, failed, or returned early
+      // at the `if (!ok)` line above. Releasing the guard anywhere else would
+      // leave the button dead after one failed attempt.
+      addingToTabRef.current = false;
+      setAddingToTab(false);
+    }
   };
 
   // THE TAKEOUT SALE. Everything happens in this one request: the visit, the
@@ -980,14 +1015,16 @@ function PointOfSale() {
           >
             <button
               onClick={confirmOrder}
-              disabled={cartLines.length === 0}
-              style={{ marginTop: 8, textAlign: "center", padding: 14, border: "none", borderRadius: 12, fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: cartLines.length === 0 ? "default" : "pointer", background: justAdded ? "#5f7a5a" : cartLines.length > 0 ? "#7a6a53" : "#e2dacb", color: justAdded || cartLines.length > 0 ? "#fff" : "#b8ab97" }}
+              disabled={cartLines.length === 0 || addingToTab}
+              style={{ marginTop: 8, textAlign: "center", padding: 14, border: "none", borderRadius: 12, fontFamily: "inherit", fontSize: 14, fontWeight: 800, cursor: cartLines.length === 0 || addingToTab ? "default" : "pointer", background: justAdded ? "#5f7a5a" : cartLines.length > 0 && !addingToTab ? "#7a6a53" : "#e2dacb", color: justAdded || (cartLines.length > 0 && !addingToTab) ? "#fff" : "#b8ab97" }}
             >
               {justAdded
                 ? "Added to tab ✓"
-                : cartLines.length > 0
-                  ? `Add ${cartCount} item${cartCount === 1 ? "" : "s"} to tab`
-                  : "Add to tab"}
+                : addingToTab
+                  ? "…"
+                  : cartLines.length > 0
+                    ? `Add ${cartCount} item${cartCount === 1 ? "" : "s"} to tab`
+                    : "Add to tab"}
             </button>
 
             {customOpen ? (
