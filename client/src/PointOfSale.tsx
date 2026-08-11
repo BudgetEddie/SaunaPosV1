@@ -161,6 +161,14 @@ function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmi
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <span style={{ fontSize: 13, fontWeight: 800, color: "#7a6a53" }}>{money(item.price)}</span>
+                    {/* So nobody stands waiting on a kitchen that isn't cooking
+                        this. Only appears where it's a surprise: a food or drink
+                        tile that won't print a ticket. */}
+                    {category.isKitchen && !item.sendsToKitchen && (
+                      <span style={{ fontSize: 10, fontWeight: 800, color: "#8a7f6d", background: "#efe8db", borderRadius: 20, padding: "2px 7px", letterSpacing: 0.3 }}>
+                        self-serve
+                      </span>
+                    )}
                     {qty > 0 && (
                       <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: "#7a6a53", borderRadius: 20, padding: "2px 9px" }}>
                         {qty}
@@ -563,7 +571,11 @@ function PointOfSale() {
       id: `m${item.id}`,
       name: item.name,
       price: item.price,
-      isKitchen: category.isKitchen,
+      // BOTH have to be true. The category decides whether the kitchen is
+      // involved at all; the item can then opt out. Nothing can opt IN — a
+      // massage with sendsToKitchen somehow true still has
+      // category.isKitchen === false and stays off the board.
+      isKitchen: category.isKitchen && item.sendsToKitchen,
       visitCredits: item.visitCredits,
       taxRate: item.taxRate,
       note: "",

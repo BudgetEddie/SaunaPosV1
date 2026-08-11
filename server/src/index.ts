@@ -484,6 +484,10 @@ function menuItemData(body: Record<string, unknown>) {
     imageData: body.imageData ? String(body.imageData) : null,
     // New items default to on sale; existing ones keep whatever was sent.
     available: body.available === undefined ? true : Boolean(body.available),
+    // Same shape, same reason: `Boolean(undefined)` is false, and defaulting
+    // this to false would silently stop food reaching the kitchen. The
+    // `=== undefined` check is what makes a missing field mean "yes, send it".
+    sendsToKitchen: body.sendsToKitchen === undefined ? true : Boolean(body.sendsToKitchen),
     // How many passes buying this GRANTS. Not to be confused with redeemsPass
     // just below, which is whether choosing it SPENDS one.
     visitCredits: Number(body.visitCredits) || 0,

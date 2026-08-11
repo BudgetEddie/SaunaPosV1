@@ -178,6 +178,18 @@ model MenuItem {
   imageData    String?
   // The "86 it" switch. Hidden items keep everything but vanish from the till.
   available    Boolean  @default(true)
+  // Does selling this print a ticket for the kitchen? A bottled water is a
+  // drink — same category, same tax — but nobody has to make it, so a ticket
+  // for it is noise on the board. Switching this off is the exception.
+  //
+  // It can only ever turn tickets OFF. The category still decides whether the
+  // kitchen is involved at all, so a massage can't opt IN by setting this.
+  //
+  // Defaults to true, deliberately. Get it wrong that way and a ticket prints
+  // for something that needed none — visible, mildly annoying, fixed in
+  // seconds. Default it to false and a guest's food order silently never
+  // reaches the kitchen while they sit waiting. Fail the noisy way.
+  sendsToKitchen Boolean @default(true)
   // THE TWO PASS FIELDS — opposites, and the easiest thing here to confuse:
   //   visitCredits — buying this GRANTS this many passes (a 10-pack: 10)
   //   redeemsPass  — choosing this SPENDS one of the guest's passes

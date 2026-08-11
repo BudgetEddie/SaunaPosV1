@@ -61,6 +61,7 @@ type Draft = {
   description: string;
   imageData: string | null;
   available: boolean;
+  sendsToKitchen: boolean;
   visitCredits: string;
   redeemsPass: boolean;
 };
@@ -105,6 +106,7 @@ function blankDraft(categoryId: number, defaultTaxPercent: string): Draft {
     description: "",
     imageData: null,
     available: true,
+    sendsToKitchen: true,
     visitCredits: "0",
     redeemsPass: false,
   };
@@ -206,6 +208,7 @@ function MenuPage() {
       description: item.description ?? "",
       imageData: item.imageData,
       available: item.available,
+      sendsToKitchen: item.sendsToKitchen,
       visitCredits: String(item.visitCredits),
       redeemsPass: item.redeemsPass,
     });
@@ -285,6 +288,7 @@ function MenuPage() {
       taxRate: (parseFloat(draft.taxPercent) || 0) / 100,
       imageData: draft.imageData,
       available: draft.available,
+      sendsToKitchen: draft.sendsToKitchen,
       visitCredits: parseInt(draft.visitCredits, 10) || 0,
       redeemsPass: draft.redeemsPass,
     };
@@ -563,6 +567,9 @@ function MenuPage() {
                             <div style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.2 }}>{item.name}</div>
                             <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86", marginTop: 2 }}>
                               Tax {(item.taxRate * 100).toFixed(2)}% · {money(item.price * (1 + item.taxRate))} with tax
+                              {/* Only meaningful on food and drink — a towel that
+                                  doesn't go to the kitchen isn't worth remarking on. */}
+                              {category.group === "FOOD_DRINK" && !item.sendsToKitchen ? " · self-serve" : ""}
                               {item.visitCredits > 0 ? ` · grants ${item.visitCredits} visits` : ""}
                               {item.redeemsPass ? " · redeems a pass" : ""}
                             </div>
@@ -732,6 +739,27 @@ function MenuPage() {
                   <div style={{ position: "absolute", top: 3, left: draft.available ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fffdf9", transition: "left .15s" }} />
                 </div>
               </div>
+
+              {/* Only shown for food and drink. Merchandise and services never
+                  send tickets anyway, so the switch would do nothing there —
+                  and offering a control that has no effect is worse than not
+                  offering one. Same `isMerch` that gates the Advanced block. */}
+              {!isMerch && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#f7f3ea", borderRadius: 12, padding: "12px 14px" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>Sends a ticket to the kitchen</div>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
+                      Switch off for anything handed straight over — bottled drinks, packaged snacks
+                    </div>
+                  </div>
+                  <div
+                    onClick={() => setDraft({ ...draft, sendsToKitchen: !draft.sendsToKitchen })}
+                    style={{ width: 46, height: 26, flex: "none", borderRadius: 20, background: draft.sendsToKitchen ? "#5f7a5a" : "#d8cebc", position: "relative", cursor: "pointer", transition: "background .15s" }}
+                  >
+                    <div style={{ position: "absolute", top: 3, left: draft.sendsToKitchen ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fffdf9", transition: "left .15s" }} />
+                  </div>
+                </div>
+              )}
 
               {/* THE VISIT PASS CONTROLS. These two settings are opposites and
                   are the easiest thing in the app to confuse:

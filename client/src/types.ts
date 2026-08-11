@@ -52,6 +52,9 @@ export type MenuItem = {
   taxRate: number;
   imageData: string | null;
   available: boolean;
+  // Whether selling this prints a kitchen ticket. Only ever turns tickets off —
+  // the category decides whether the kitchen is involved at all.
+  sendsToKitchen: boolean;
   visitCredits: number;
   redeemsPass: boolean;
 };

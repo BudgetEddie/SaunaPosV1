@@ -57,7 +57,7 @@ type KitchenOrder = {
   };
 };
 type RosterEntry = { username: string; displayName: string; role: string };
-type CartLine = { qty: number; note: string; name: string; price: number; taxRate: number };
+type CartLine = { qty: number; note: string; name: string; price: number; taxRate: number; sendsToKitchen: boolean };
 type Cart = Record<number, CartLine>;
 
 // The board, described as data rather than written out three times. Each entry
@@ -194,13 +194,13 @@ function Kitchen() {
     setCart({});
   };
 
-  const bump = (item: { id: number; name: string; price: number; taxRate: number }, delta: number) => {
+  const bump = (item: { id: number; name: string; price: number; taxRate: number; sendsToKitchen: boolean }, delta: number) => {
     setCart((prev) => {
       const next = { ...prev };
       const line = next[item.id];
       const qty = (line?.qty ?? 0) + delta;
       if (qty <= 0) delete next[item.id];
-      else next[item.id] = { qty, note: line?.note ?? "", name: item.name, price: item.price, taxRate: item.taxRate };
+      else next[item.id] = { qty, note: line?.note ?? "", name: item.name, price: item.price, taxRate: item.taxRate, sendsToKitchen: item.sendsToKitchen };
       return next;
     });
   };
@@ -228,7 +228,10 @@ function Kitchen() {
         amount: line.price,
         // Always true here — everything orderable from this screen is food or
         // drink, so it always produces a ticket.
-        isKitchen: true,
+        // WAS `true`, which was safe only while everything on this screen went
+        // to the kitchen. A self-serve drink handed over the counter is a sale,
+        // not a ticket the kitchen writes to itself.
+        isKitchen: line.sendsToKitchen,
         visitCredits: 0,
         taxRate: line.taxRate,
         note: line.note,
