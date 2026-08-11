@@ -414,6 +414,11 @@ body {
   font-weight: 700;
   color: #2b2620;
   outline: none;
+  /* The whole box opens the calendar (see the onClick in Reports.tsx), so it
+     should look like a button, not like a text field waiting to be typed in.
+     Without this it shows a text caret, which is what made the picker easy to
+     miss in the first place. */
+  cursor: pointer;
 }
 .rp-date:focus {
   border-color: #7a6a53;

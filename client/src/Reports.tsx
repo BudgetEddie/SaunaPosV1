@@ -283,10 +283,26 @@ function Reports() {
               );
             })}
           </div>
+          {/* Clicking anywhere in the box opens the calendar.
+              A date input HAS a calendar built in, but the browser only opens it
+              from the little icon at the right edge — clicking the text just puts
+              a cursor in the day or month so you type over it. Most people never
+              find the icon, so the field looks like it's type-only.
+              `showPicker()` is the browser asking its own calendar to drop down.
+              Guarded twice, because it can fail in two ordinary ways:
+                ?.()   — older browsers don't have it. They keep the old
+                         behaviour instead of crashing the screen.
+                try    — it throws if the calendar is ALREADY open, which happens
+                         when the click lands on the icon: that opens the picker
+                         and then runs this too. Without the catch, every click
+                         on the icon would put a red error in the console.
+              Typing still works — this doesn't make the field read-only, and
+              typing is still the quicker way to reach a date months back. */}
           <input
             className="rp-date"
             type="date"
             value={date}
+            onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* no showPicker, or already open */ } }}
             onChange={(e) => { setDate(e.target.value); setScope("day"); }}
           />
         </div>
