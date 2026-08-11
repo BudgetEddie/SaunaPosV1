@@ -188,7 +188,7 @@ live in `client/src/types.ts`.
 |---|---|
 | `src/index.ts` | The entire backend. All 32 endpoints, the sign-in check, the live broadcasts. |
 | `prisma/schema.prisma` | The database's shape — every table and field. |
-| `prisma/seed.ts` | Sets up the 120 lockers. **Erases visits and bills** — first-time setup only. |
+| `prisma/seed.ts` | Sets up the 120 lockers. **Erases visits, bills and kitchen orders** — first-time setup only. Refuses to run once the database has any visits, unless given `--force-wipe`. |
 | `prisma/seed-users.ts` | Creates the staff logins. Also how you reset a forgotten password. |
 | `prisma/fix-menu.ts` | A one-time repair script that has already been run. Kept as history. |
 | `prisma/migrations/` | The dated history of every database shape change. |
@@ -233,12 +233,22 @@ Then open the address the client prints, usually <http://localhost:5173>.
 ```bash
 cd server
 npx prisma migrate deploy    # build the tables
-npx ts-node prisma/seed.ts   # create the 120 lockers — WIPES visits and bills
+npx ts-node prisma/seed.ts   # create the 120 lockers — WIPES visits, bills and kitchen orders
 npx ts-node prisma/seed-users.ts   # create the staff logins
 ```
 
 Edit the passwords at the top of `seed-users.ts` before running it. Re-running that one file is
 also how you reset a password later — it's safe to run repeatedly, unlike `seed.ts`.
+
+`seed.ts` protects itself: on a database that already has visits in it, it prints what it found
+and refuses to do anything. That refusal is the expected outcome on any till that has been used,
+and it's *not* a fault to work around — it means you're pointed at a database with real trading
+history on it. If wiping really is what you want, on your own machine or a fresh install, say so
+in as many words:
+
+```bash
+npx ts-node prisma/seed.ts --force-wipe
+```
 
 **If the server won't start**, check `server/.env` exists and has `DATABASE_URL` and
 `JWT_SECRET`. It's deliberately kept out of version control, so it won't be there after a fresh
