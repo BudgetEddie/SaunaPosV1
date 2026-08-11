@@ -775,6 +775,64 @@ app.post("/lockers/:lockerId/status", async (req, res) => {
   res.json(updated);
 });
 
+// ---- Tables ----------------------------------------------------------------
+
+// Every table and its status. No filtering — the board shows the whole lounge.
+app.get("/tables", async (_req, res) => {
+  const tables = await prisma.table.findMany({ orderBy: { number: "asc" } });
+  res.json(tables);
+});
+
+// Seat a table, clear it, flag it out of use, or return it to service.
+//
+// The allowed moves:
+//   AVAILABLE   → OCCUPIED      seating guests
+//   AVAILABLE   → MAINTENANCE   taking it out of use
+//   OCCUPIED    → AVAILABLE     clearing it
+//   MAINTENANCE → AVAILABLE     back into use
+//
+// Everything else is refused. In particular an occupied table can't be flagged
+// out of use directly — clear it first, the same rule lockers follow.
+app.post("/tables/:tableId/status", async (req, res) => {
+  const tableId = Number(req.params.tableId);
+  const { status, note } = req.body;
+
+  if (status !== "AVAILABLE" && status !== "OCCUPIED" && status !== "MAINTENANCE") {
+    return res.status(400).json({ error: "Unknown table status" });
+  }
+
+  const table = await prisma.table.findUnique({ where: { id: tableId } });
+  if (!table) {
+    return res.status(404).json({ error: "Table not found" });
+  }
+
+  if (status !== "AVAILABLE" && table.status !== "AVAILABLE") {
+    return res.status(409).json({
+      error: table.status === "OCCUPIED"
+        ? `Table ${table.number} is occupied. Clear it first.`
+        : `Table ${table.number} is out of service.`,
+    });
+  }
+  if (status === "AVAILABLE" && table.status === "AVAILABLE") {
+    return res.status(409).json({ error: `Table ${table.number} is already free.` });
+  }
+
+  const updated = await prisma.table.update({
+    where: { id: tableId },
+    data: {
+      status,
+      // Only an occupied table has a clock running, and only an out-of-service
+      // one has a reason. Both are cleared otherwise, so neither can outlive
+      // the state it describes.
+      occupiedSince: status === "OCCUPIED" ? new Date() : null,
+      maintenanceNote: status === "MAINTENANCE" ? (note ?? null) : null,
+    },
+  });
+
+  io.emit("table:updated", updated);
+  res.json(updated);
+});
+
 // Confirm a pending order: every item hits the bill, kitchen items join ONE
 // kitchen order, pass credits apply — all in a single transaction.
 //

@@ -115,3 +115,17 @@ export type Visit = {
   orders: Order[];
   redeemsPass: boolean;
 };
+// A dining table. Nothing points at it and it points at nothing — it exists
+// only to say whether there's somewhere to sit.
+//
+// `occupiedSince` is a string, not a Date. Dates arrive over the network as
+// text and stay text unless something converts them — Tables.tsx passes it
+// straight to `new Date(...)` when it needs the duration.
+export type Table = {
+  id: number;
+  number: string;
+  seats: number | null;
+  status: string;
+  occupiedSince: string | null;
+  maintenanceNote: string | null;
+};

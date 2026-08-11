@@ -27,6 +27,7 @@ import CustomerDirectory from "./CustomerDirectory.tsx";
 import PointOfSale from "./PointOfSale.tsx";
 import Kitchen from "./Kitchen.tsx";
 import Lockers from "./Lockers.tsx";
+import Tables from "./Tables.tsx";
 import Reports from "./Reports.tsx";
 import MenuPage from "./MenuPage.tsx";
 import Receipt from "./Receipt.tsx";
@@ -50,15 +51,17 @@ createRoot(document.getElementById("root")!).render(
             sign-in gate, which is why Receipt.tsx checks for a token itself. */}
         <Route path="/receipt/:billId" element={<Receipt />} />
 
-        {/* Everything below is wrapped in the Shell — so all six of these get
-            the sidebar, and all six are unreachable unless someone is signed
-            in. Shell.tsx decides which. */}
+        {/* Everything below is wrapped in the Shell — so every one of these
+            gets the sidebar, and none is reachable unless someone is signed
+            in. Shell.tsx decides which. (Deliberately not counted here: the
+            number was already wrong before Tables was added.) */}
         <Route element={<Shell />}>
           <Route path="/" element={<Home />} />
           <Route path="/customers" element={<CustomerDirectory />} />
           <Route path="/pos" element={<PointOfSale />} />
           <Route path="/kitchen" element={<Kitchen />} />
           <Route path="/lockers" element={<Lockers />} />
+          <Route path="/tables" element={<Tables />} />
           {/* These last two are admin-only. The sidebar hides the links from
               staff, and each screen re-checks on its own — but the real
               enforcement is on the server, which refuses the data outright. */}

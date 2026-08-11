@@ -322,3 +322,28 @@ model BillLineItem {
   visitCreditsGranted Int      @default(0)
   createdAt           DateTime @default(now())
 }
+
+// A dining table in the lounge. Deliberately not a Locker: no gender, no guest,
+// no bill. Anything ordered at a table goes on that guest's locker tab, so this
+// model exists only to answer "is there somewhere to sit".
+model Table {
+  id     Int         @id @default(autoincrement())
+  number String
+  // How many people it takes. Optional — leave it null and the screen simply
+  // won't show a seat count.
+  seats  Int?
+  status TableStatus @default(AVAILABLE)
+  // When it was marked occupied. Nothing enforces that a table gets cleared,
+  // so this is what lets the screen show "occupied 6h 40m" and make a
+  // forgotten table obvious. Cleared whenever the table stops being occupied.
+  occupiedSince   DateTime?
+  // Why it's out of use — "broken chair", "spill". Optional, and cleared when
+  // the table returns to service so it never describes a working table.
+  maintenanceNote String?
+}
+
+enum TableStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
