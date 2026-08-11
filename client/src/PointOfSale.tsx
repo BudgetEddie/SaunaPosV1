@@ -402,6 +402,23 @@ function PointOfSale() {
   const lockerParam = searchParams.get("locker") ?? "";
   const [query, setQuery] = useState(lockerParam);
 
+  // Cards or a list. Cards read nicely at a handful of guests; on a busy day
+  // they push everyone off the bottom of the screen and a list is far quicker
+  // to scan.
+  //
+  // The choice is kept in localStorage, the small notepad the browser keeps per
+  // site, so a terminal stays on whichever view it was left on — including
+  // tomorrow. It's per terminal, so a busy front desk can sit on the list while
+  // another screen keeps the cards. To make it always start on cards instead,
+  // delete the localStorage lines and use useState<"cards" | "list">("cards").
+  const [view, setView] = useState<"cards" | "list">(
+    () => (localStorage.getItem("posView") === "list" ? "list" : "cards")
+  );
+  const chooseView = (next: "cards" | "list") => {
+    setView(next);
+    localStorage.setItem("posView", next);
+  };
+
   const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
   const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
@@ -734,6 +751,14 @@ function PointOfSale() {
       )
     : visits;
 
+  // The list is ordered by locker instead, because that's what staff are
+  // usually holding when they come to look someone up — a key tag, not a name.
+  // Locker numbers are zero-padded (M01, not M1) precisely so plain text
+  // sorting puts them in the right order; without the padding M10 would come
+  // before M2. `slice()` first because sort() rearranges the array in place,
+  // and this one is the state array every other screen is reading.
+  const byLocker = filtered.slice().sort((a, b) => a.locker.number.localeCompare(b.locker.number));
+
   const now = new Date();
 
   // Checkout takes over the whole page — still inside the Point of Sale tab,
@@ -799,8 +824,76 @@ function PointOfSale() {
         <div style={{ flex: "none", fontSize: 12, fontWeight: 700, color: "#a89a86" }}>
           {filtered.length} of {visits.length}
         </div>
+
+        {/* Cards or list. Same segmented control as the one on Reports, so it
+            behaves the way staff already expect that shape to behave. */}
+        <div style={{ flex: "none", display: "inline-flex", background: "#e7e0d5", borderRadius: 11, padding: 3, gap: 3 }}>
+          {([["cards", "Cards"], ["list", "List"]] as const).map(([id, label]) => {
+            const on = view === id;
+            return (
+              <div
+                key={id}
+                onClick={() => chooseView(id)}
+                style={{ padding: "7px 15px", borderRadius: 9, cursor: "pointer", fontSize: 12.5, fontWeight: 700, background: on ? "#fffdf9" : "transparent", color: on ? "#2b2620" : "#8a7d6a", boxShadow: on ? "0 1px 3px rgba(43,38,32,.12)" : "none" }}
+              >
+                {label}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
+      {view === "list" && filtered.length > 0 && (
+        <div style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 16, overflow: "hidden", boxShadow: "0 1px 2px rgba(43,38,32,.04)" }}>
+          {/* Column headings. The widths are fixed so every row lines up and
+              the eye can run straight down a single column — which is the
+              whole reason for having a list rather than cards. */}
+          <div style={{ display: "grid", gridTemplateColumns: "72px 1fr 150px 1fr 132px 120px", gap: 14, alignItems: "center", padding: "11px 18px", borderBottom: "1px solid rgba(43,38,32,.08)", background: "#faf6ef" }}>
+            <div style={MICRO}>Locker</div>
+            <div style={MICRO}>Guest</div>
+            <div style={MICRO}>In since</div>
+            <div style={MICRO}>Notes</div>
+            <div style={MICRO}>Kitchen</div>
+            <div style={{ ...MICRO, textAlign: "right" }}>Open tab</div>
+          </div>
+
+          {byLocker.map((v) => {
+            const { total } = billTotal(v);
+            const chips = chipsFor(v);
+            // Split them apart so each lands in its own column. The note is the
+            // safety-critical one — an allergy — so it gets a fixed position on
+            // every row rather than shifting about depending on what else is
+            // showing.
+            const noteChip = chips.find((c) => c.key === "notes");
+            const kitchenChip = chips.find((c) => c.key === "kitchen");
+            return (
+              <div
+                key={v.id}
+                className="pos-row"
+                onClick={() => openGuest(v.id)}
+                style={{ display: "grid", gridTemplateColumns: "72px 1fr 150px 1fr 132px 120px", gap: 14, alignItems: "center", padding: "13px 18px", borderTop: "1px solid rgba(43,38,32,.06)", cursor: "pointer" }}
+              >
+                <div style={{ fontSize: 15, fontWeight: 800, color: "#7a6a53" }}>{v.locker.number}</div>
+                <div style={{ minWidth: 0, fontSize: 14, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {v.customer.firstName} {v.customer.lastName}
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#a89a86" }}>
+                  {sinceLabel(v.checkInAt)} · {fmtDuration(v.checkInAt)}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  {noteChip && <Chip label={noteChip.label} ink={noteChip.ink} bg={noteChip.bg} />}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  {kitchenChip && <Chip label={kitchenChip.label} ink={kitchenChip.ink} bg={kitchenChip.bg} />}
+                </div>
+                <div style={{ textAlign: "right", fontSize: 15, fontWeight: 800 }}>{money(total)}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {view === "cards" && (
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
         {filtered.map((v) => {
           const { total } = billTotal(v);
@@ -846,6 +939,7 @@ function PointOfSale() {
           );
         })}
       </div>
+      )}
 
       {filtered.length === 0 && (
         <div style={{ padding: 34, textAlign: "center", fontSize: 14, fontWeight: 600, color: "#a89a86", background: "#fffdf9", border: "1px dashed #d8cebc", borderRadius: 16 }}>

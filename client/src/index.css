@@ -332,6 +332,16 @@ body {
   transform: translateY(-1px);
 }
 
+/* One guest per row in the Point of Sale list view. A card lifts on hover;
+   a row can't (it would shunt its neighbours), so it fills instead — the
+   same cue the Reports and Menu rows already use. */
+.pos-row {
+  transition: background .12s;
+}
+.pos-row:hover {
+  background: #f7f3ea;
+}
+
 .pos-tile:hover {
   border-color: #7a6a53;
 }
