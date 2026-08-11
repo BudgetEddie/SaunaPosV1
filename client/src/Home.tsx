@@ -216,8 +216,12 @@ function Home() {
   // Count lockers in one pool — either all of them, or only the free ones.
   const count = (g: string, status?: string) =>
     lockers.filter((l) => l.gender === g && (!status || l.status === status)).length;
-  const freeM = count("MALE", "AVAILABLE"), totalM = count("MALE");
-  const freeF = count("FEMALE", "AVAILABLE"), totalF = count("FEMALE");
+  // A locker that's out of service isn't capacity — leaving it in the total
+  // would mean the dial reads "3 of 5" when only four can take a guest.
+  const usable = (g: string) =>
+    lockers.filter((l) => l.gender === g && l.status !== "MAINTENANCE").length;
+  const freeM = count("MALE", "AVAILABLE"), totalM = usable("MALE");
+  const freeF = count("FEMALE", "AVAILABLE"), totalF = usable("FEMALE");
 
   // Split the headcount by gender for the little two-tone bar.
   const menIn = visits.filter((v) => v.customer.gender === "MALE").length;

@@ -26,6 +26,7 @@ import Home from "./Home.tsx";
 import CustomerDirectory from "./CustomerDirectory.tsx";
 import PointOfSale from "./PointOfSale.tsx";
 import Kitchen from "./Kitchen.tsx";
+import Lockers from "./Lockers.tsx";
 import Reports from "./Reports.tsx";
 import MenuPage from "./MenuPage.tsx";
 import Receipt from "./Receipt.tsx";
@@ -57,6 +58,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/customers" element={<CustomerDirectory />} />
           <Route path="/pos" element={<PointOfSale />} />
           <Route path="/kitchen" element={<Kitchen />} />
+          <Route path="/lockers" element={<Lockers />} />
           {/* These last two are admin-only. The sidebar hides the links from
               staff, and each screen re-checks on its own — but the real
               enforcement is on the server, which refuses the data outright. */}

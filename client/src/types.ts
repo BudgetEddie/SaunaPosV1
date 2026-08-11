@@ -35,7 +35,7 @@ export type Customer = {
 // a women's pool, and a guest can only be given one from their own. `status`
 // is AVAILABLE, OCCUPIED or MAINTENANCE.
 // Used by PointOfSale.tsx for the "Move locker…" dropdown.
-export type Locker = { id: number; number: string; gender: string; status: string };
+export type Locker = { id: number; number: string; gender: string; status: string; maintenanceNote: string | null };
 
 // One sellable thing. Two fields here are opposites and easy to mix up:
 //   visitCredits — how many passes BUYING this grants (a 10-pack has 10).

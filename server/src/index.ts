@@ -724,47 +724,55 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
   res.json({ ok: true });
 });
 
-// Move a guest to a different locker mid-visit — a broken lock, or wanting to
-// be nearer a friend. Same pool rules as check-in.
-app.post("/visits/:visitId/change-locker", async (req, res) => {
-  const visitId = Number(req.params.visitId);
-  const { lockerId } = req.body;
+// Flag a locker as broken, or return it to service.
+//
+// The guard is the whole point of this endpoint. A locker can only go
+// AVAILABLE → MAINTENANCE and MAINTENANCE → AVAILABLE. In particular an
+// OCCUPIED locker can never be flagged: doing so would leave a guest holding a
+// key to a locker the system thinks is out of action, and check-out would then
+// hand a broken locker back to the available pool. Staff move the guest first,
+// which frees this locker, and then it can be flagged.
+//
+// The rule lives here rather than only in the browser because a stale page, a
+// second terminal or a direct request could all try it otherwise.
+app.post("/lockers/:lockerId/status", async (req, res) => {
+  const lockerId = Number(req.params.lockerId);
+  const { status, note } = req.body;
 
-  const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { customer: true } });
-  if (!visit || visit.checkOutAt) {
-    return res.status(404).json({ error: "Active visit not found" });
-  }
-  
-  // Nothing to move. A takeout order never held a locker in the first place.
-  const currentLockerId = visit.lockerId;
-  if (!visit.customer || currentLockerId === null) {
-    return res.status(400).json({ error: "A takeout order has no locker to move" });
+  if (status !== "AVAILABLE" && status !== "MAINTENANCE") {
+    return res.status(400).json({ error: "Status must be AVAILABLE or MAINTENANCE" });
   }
 
-  const newLocker = await prisma.locker.findUnique({ where: { id: lockerId } });
-  if (!newLocker) {
+  const locker = await prisma.locker.findUnique({ where: { id: lockerId } });
+  if (!locker) {
     return res.status(404).json({ error: "Locker not found" });
   }
-  if (newLocker.status !== "AVAILABLE") {
-    return res.status(409).json({ error: `Locker ${newLocker.number} is not available` });
+
+  if (status === "MAINTENANCE" && locker.status !== "AVAILABLE") {
+    return res.status(409).json({
+      error: locker.status === "OCCUPIED"
+        ? `Locker ${locker.number} has a guest in it. Move them to another locker first, then flag this one.`
+        : `Locker ${locker.number} is already out of service.`,
+    });
   }
-  if (newLocker.gender !== visit.customer.gender) {
-    return res.status(409).json({ error: `Locker ${newLocker.number} is not in this customer's locker pool` });
+  if (status === "AVAILABLE" && locker.status !== "MAINTENANCE") {
+    return res.status(409).json({
+      error: `Locker ${locker.number} isn't out of service.`,
+    });
   }
 
-  // Free the old, claim the new, repoint the visit — together. Any partial
-  // version of this is bad: both lockers occupied, or neither, or a guest
-  // pointing at a locker somebody else has been given.
-  const [freedLocker, claimedLocker, updatedVisit] = await prisma.$transaction([
-    prisma.locker.update({ where: { id: currentLockerId }, data: { status: "AVAILABLE" } }),
-    prisma.locker.update({ where: { id: newLocker.id }, data: { status: "OCCUPIED" } }),
-    prisma.visit.update({ where: { id: visitId }, data: { lockerId: newLocker.id } }),
-  ]);
+  const updated = await prisma.locker.update({
+    where: { id: lockerId },
+    data: {
+      status,
+      // Coming back into service clears the note, so it can never describe a
+      // locker that's currently working.
+      maintenanceNote: status === "MAINTENANCE" ? (note ?? null) : null,
+    },
+  });
 
-  io.emit("locker:updated", freedLocker);
-  io.emit("locker:updated", claimedLocker);
-  io.emit("visit:locker-changed", updatedVisit);
-  res.json(updatedVisit);
+  io.emit("locker:updated", updated);
+  res.json(updated);
 });
 
 // Confirm a pending order: every item hits the bill, kitchen items join ONE

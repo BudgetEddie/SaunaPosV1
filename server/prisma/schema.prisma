@@ -210,10 +210,14 @@ model Customer {
 // them) and then just changes status as guests come and go.
 model Locker {
   id     Int          @id @default(autoincrement())
-  number String // "M07", "F42" — what's on the door
-  gender Gender // which pool it belongs to
+  number String
+  gender Gender
   status LockerStatus @default(AVAILABLE)
-  visits Visit[] // every stay that has ever used it
+  // Why this locker is out of service — "lock broken", "door won't shut".
+  // Optional: staff can flag one without explaining. Cleared automatically
+  // when it returns to service, so it never describes a working locker.
+  maintenanceNote String?
+  visits Visit[]
 }
 
 // ONE PERSON'S STAY — the hub everything else hangs off. Created at check-in,

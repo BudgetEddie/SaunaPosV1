@@ -81,6 +81,7 @@ function Shell() {
           <NavLink to="/customers" className="side-link">Customer Directory</NavLink>
           <NavLink to="/pos" className="side-link">Point of Sale</NavLink>
           <NavLink to="/kitchen" className="side-link">Kitchen</NavLink>
+          <NavLink to="/lockers" className="side-link">Lockers</NavLink>
           {isAdmin && <NavLink to="/reports" className="side-link">Reports</NavLink>}
           {/* An empty stretchy box that eats all the leftover height, pushing
               Menu and the sign-out button down to the bottom of the sidebar. */}
