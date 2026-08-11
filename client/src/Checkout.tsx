@@ -30,6 +30,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { authFetch } from "./authFetch.ts";
+import { useOverride } from "./OverrideProvider.tsx";
 import { type BillLineItem, type Visit } from "./types.ts";
 
 type RosterEntry = { username: string; displayName: string; role: string };
@@ -157,7 +158,11 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   // Voiding a charge is admin-only. Staff see the button but get a polite
   // refusal; the server rejects it regardless of what this says.
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
+  // Still used, but only for wording now — it no longer decides who may void.
+  // That question moved to the server, which accepts either an admin login or
+  // a manager's approval.
   const isAdmin = user?.role === "ADMIN";
+  const askOverride = useOverride();
 
   useEffect(() => {
     authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
@@ -219,10 +224,19 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   const voidOne = async (row: BillRow) => {
     const id = row.ids[row.ids.length - 1]; // the most recently rung-up one
     if (!confirm(`Void one "${row.description}" (${money(row.unit)}) from this bill?`)) return;
-    const res = await authFetch(`/bills/${visit.bill.id}/line-items/${id}`, { method: "DELETE" });
+    // An admin gets "" straight back and is never prompted. Staff get the
+    // manager's password box; null means it was cancelled.
+    // The label shown here is also what lands in the approval log, so it's
+    // specific on purpose — "Void" tells you nothing three weeks later.
+    const token = await askOverride(`Void "${row.description}" (${money(row.unit)})`);
+    if (token === null) return;
+    const res = await authFetch(`/bills/${visit.bill.id}/line-items/${id}`, { method: "DELETE" }, token);
     if (!res.ok) {
       const { error } = await res.json();
       alert(error);
+    } else if (token) {
+      // Only staff see this — an admin's token is "" and needed no approval.
+      showToast(`Approved · voided ${row.description}`);
     }
   };
 
@@ -485,13 +499,7 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
             <div style={{ ...PANEL, padding: 18 }}>
               <div style={{ ...LABEL, marginBottom: 12 }}>Adjustments</div>
               <button
-                onClick={() => {
-                  if (!isAdmin) {
-                    showToast("Only an Admin login can apply this.");
-                    return;
-                  }
-                  setVoiding((v) => !v);
-                }}
+                onClick={() => setVoiding((v) => !v)}
                 style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 13, borderRadius: 11, border: `1.5px solid ${voiding ? "#8f3f28" : "#d8cebc"}`, background: "#fffdf9", color: voiding ? "#8f3f28" : "#6b6152", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
               >
                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
@@ -501,7 +509,11 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
                 {voiding ? "Done voiding" : "Void an item"}
               </button>
               <div style={{ fontSize: 11.5, color: "#b8ab97", fontWeight: 600, marginTop: 10, textAlign: "center" }}>
-                {voiding ? "Pick a row to remove one of" : "Requires an Admin login · refunds live on Reports"}
+                {voiding
+                  ? "Pick a row to remove one of"
+                  : isAdmin
+                    ? "Refunds live on Reports"
+                    : "Needs a manager's approval · refunds live on Reports"}
               </div>
             </div>
 

@@ -32,6 +32,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch, type LoggedInUser } from "./authFetch.ts";
+import { useOverride } from "./OverrideProvider.tsx";
 
 // The live line to the server — opened once when the app starts, shared by
 // both of the effects further down.
@@ -212,6 +213,7 @@ function CustomerDirectory() {
   // both — this just decides whether to show the Edit button.
   const user: LoggedInUser | null = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
+  const askOverride = useOverride();
 
   const loadCustomers = () => authFetch(`/customers`).then((r) => r.json()).then(setCustomers);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
@@ -309,11 +311,15 @@ function CustomerDirectory() {
 
   const saveEdit = async () => {
     if (!selected) return;
+    // Asked for on SAVE, not on "Edit profile" — so nobody summons a manager
+    // for someone who opens the form and changes their mind.
+    const token = await askOverride(`Edit ${selected.firstName} ${selected.lastName}'s profile`);
+    if (token === null) return;
     const ok = await showError(await authFetch(`/customers/${selected.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(draft),
-    }));
+    }, token));
     if (!ok) return;
     setEditing(false);
     loadCustomers();
@@ -602,10 +608,12 @@ function CustomerDirectory() {
             </div>
           </div>
           <div style={{ flex: "none", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-            {!editing && isAdmin && (
+            {!editing && (
               <>
                 <button onClick={startEdit} style={BTN_GHOST}>Edit profile</button>
-                <div style={{ fontSize: 10.5, fontWeight: 600, color: "#b8ab97" }}>Admin only</div>
+                <div style={{ fontSize: 10.5, fontWeight: 600, color: "#b8ab97" }}>
+                  {isAdmin ? "Admin" : "Needs approval"}
+                </div>
               </>
             )}
             {editing && (

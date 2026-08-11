@@ -30,6 +30,7 @@
 import { useEffect, useState, type ChangeEvent } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
+import { useOverride } from "./OverrideProvider.tsx";
 import { type Category, type MenuItem } from "./types.ts";
 
 const socket = io("http://localhost:4000");
@@ -121,11 +122,27 @@ function MenuPage() {
 
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
+  const askOverride = useOverride();
+
+  // Like Reports, this is a screen you enter to do admin work, so it unlocks
+  // once rather than prompting on every save. "" for an admin who needs no
+  // approval, a token once a manager approves, null while still locked.
+  const [approval, setApproval] = useState<string | null>(isAdmin ? "" : null);
+  // Set when the server refuses — which is what happens when the ten minutes
+  // lapse mid-edit. Without this the page would keep alerting with no way back.
+  const [expired, setExpired] = useState(false);
+
+  const unlock = async () => {
+    const token = await askOverride("Edit the menu", "PAGE");
+    if (token === null) return;
+    setApproval(token);
+    setExpired(false);
+  };
 
   const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (approval === null) return;
     loadMenu();
     authFetch(`/settings`).then((r) => r.json()).then((s) => {
       // Only take the saved rate the first time. Without this guard, a later
@@ -141,23 +158,39 @@ function MenuPage() {
       socket.off("menu:updated", loadMenu);
     };
     // The linter wants more listed here; deliberately left out so this runs
-    // only once rather than on every redraw.
+    // only once rather than on every redraw. `approval` IS listed, because
+    // the menu has to actually load once a manager unlocks it — without it
+    // this effect would never re-run and the page would stay empty forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [approval]);
 
-  if (!isAdmin) {
+  if (approval === null) {
     return (
       <div style={{ background: "#f4efe7", minHeight: "100vh", padding: 26 }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Menu</h1>
-        <p style={{ color: "#a89a86", fontWeight: 600 }}>Only the admin login can edit the menu.</p>
+        <p style={{ color: "#a89a86", fontWeight: 600, maxWidth: 380, lineHeight: 1.5 }}>
+          {expired
+            ? "That approval has run out. A manager can open it again."
+            : "Changing prices needs a manager's approval."}
+        </p>
+        <button className="ov-btn ov-go" style={{ maxWidth: 220 }} onClick={unlock}>
+          Ask a manager
+        </button>
       </div>
     );
   }
 
   const showError = async (res: Response) => {
     if (!res.ok) {
-      const { error } = await res.json();
-      alert(error);
+      const body = await res.json().catch(() => ({}));
+      // The approval lapsed mid-edit. Lock the screen and offer the prompt
+      // again rather than alerting on every subsequent save with no way back.
+      if (res.status === 403 && body.needsOverride) {
+        setApproval(isAdmin ? "" : null);
+        setExpired(true);
+        return false;
+      }
+      alert(body.error);
     }
     return res.ok;
   };
@@ -262,12 +295,12 @@ function MenuPage() {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-        })
+        }, approval)
       : await authFetch(`/menu-items`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-        });
+        }, approval);
     if (!(await showError(res))) return;
     setDraft(null);
     loadMenu();
@@ -279,7 +312,7 @@ function MenuPage() {
   const deleteItem = async () => {
     if (!draft?.id) return;
     if (!confirm("Delete this item? Bills already rung up are unaffected.")) return;
-    await showError(await authFetch(`/menu-items/${draft.id}`, { method: "DELETE" }));
+    await showError(await authFetch(`/menu-items/${draft.id}`, { method: "DELETE" }, approval));
     setDraft(null);
     loadMenu();
   };
@@ -292,7 +325,7 @@ function MenuPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ available: !item.available }),
-    }));
+    }, approval));
     loadMenu();
   };
 
@@ -305,7 +338,7 @@ function MenuPage() {
         group: changes.group ?? category.group,
         isAdmission: changes.isAdmission ?? category.isAdmission,
       }),
-    }));
+    }, approval));
     loadMenu();
   };
 
@@ -315,7 +348,7 @@ function MenuPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: newCatName.trim(), group: catFormGroup, isAdmission: false }),
-    }));
+    }, approval));
     if (!ok) return;
     setNewCatName("");
     setCatFormGroup(null);
@@ -326,7 +359,7 @@ function MenuPage() {
   // there's no way to accidentally orphan half the menu.
   const deleteCategory = async (category: Category) => {
     if (!confirm(`Remove the category "${category.name}"?`)) return;
-    await showError(await authFetch(`/categories/${category.id}`, { method: "DELETE" }));
+    await showError(await authFetch(`/categories/${category.id}`, { method: "DELETE" }, approval));
     loadMenu();
   };
 
@@ -340,7 +373,7 @@ function MenuPage() {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ taxRate: rate }),
-    }));
+    }, approval));
     if (ok) alert("Saved. New items will start at this rate.");
   };
 

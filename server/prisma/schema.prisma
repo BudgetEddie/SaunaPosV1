@@ -123,6 +123,12 @@ model User {
   // access, can read what anyone's passphrase actually is.
   passwordHash String
   createdAt    DateTime @default(now())
+
+  // Both ends of a manager override. Prisma insists a relation is declared on
+  // both models, and with TWO links to the same table it can't tell them apart
+  // by type alone — hence the names, which must match Override exactly.
+  approvedOverrides  Override[] @relation("OverrideApprover")
+  requestedOverrides Override[] @relation("OverrideRequester")
 }
 
 // House-wide configuration. There is exactly ONE of these, always id 1 — a
@@ -346,4 +352,33 @@ enum TableStatus {
   AVAILABLE
   OCCUPIED
   MAINTENANCE
+}
+
+// ONE MANAGER APPROVAL. A staff member hit something only an admin may do, a
+// manager typed their password, and this row is the permission slip that came
+// out. It's a row rather than a signed blob for two reasons: the audit trail
+// falls out of it for free, and "already used" is a column the server can
+// stamp, which is what makes single-use enforceable at all.
+//
+// ⚠️ KNOWN LIMIT, chosen deliberately: the token is NOT tied to the action it
+//    was approved for. `action` is recorded for the log but never checked, and
+//    `scope` comes from the client. So a PAGE approval for "Open Reports" will
+//    also satisfy any other admin endpoint until it expires. Tightening that
+//    means storing a capability here and checking it in requireAdmin.
+model Override {
+  id            Int      @id @default(autoincrement())
+  // The secret the client sends back in the X-Override header.
+  token         String   @unique
+  // What the manager was told they were approving. Shown in the log.
+  action        String
+  // ACTION = one use, minutes. PAGE = reusable while a screen is open.
+  scope         String   @default("ACTION")
+  approvedById  Int
+  approvedBy    User     @relation("OverrideApprover", fields: [approvedById], references: [id])
+  requestedById Int
+  requestedBy   User     @relation("OverrideRequester", fields: [requestedById], references: [id])
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  // Null until spent. THIS COLUMN IS the single-use rule.
+  usedAt        DateTime?
 }

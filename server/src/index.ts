@@ -44,6 +44,9 @@ import { Server } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+// Node's own randomness. Used for one thing: minting override tokens that
+// nobody can guess. Math.random() would NOT do here — it's predictable.
+import crypto from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 
 // The secret used to sign sign-in tokens, read from server/.env — a file kept
@@ -105,11 +108,55 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
 // The second bouncer, for the things only a manager should do: reports,
 // refunds, editing the menu, voiding a charge. Added individually to those
 // routes rather than applied to everything.
-function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
-  if (req.auth?.role !== "ADMIN") {
-    return res.status(403).json({ error: "Only the admin login can do this" });
+// Now also accepts a manager's permission slip. A staff member who has had an
+// admin type their password gets a token (see POST /override below) and sends
+// it back in the X-Override header; this is where it's checked and spent.
+//
+// It's `async` now. Express 5 handles a middleware that returns a promise, and
+// none of the twelve routes using it need changing.
+async function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction) {
+  // A real admin login never needs a permission slip.
+  if (req.auth?.role === "ADMIN") return next();
+
+  const token = req.header("X-Override");
+  if (token) {
+    // For ACTION tokens, spending is done as ONE conditional write rather than
+    // read-then-write. `updateMany` with the conditions in its `where` compiles
+    // to a single UPDATE … WHERE, and the database guarantees only one caller
+    // can match a row whose usedAt is still null. Two simultaneous clicks
+    // therefore produce one success and one refusal, instead of both reading
+    // "not used yet" and both going through.
+    const spent = await prisma.override.updateMany({
+      where: {
+        token,
+        scope: "ACTION",
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+        requestedById: req.auth?.userId,
+      },
+      data: { usedAt: new Date() },
+    });
+    if (spent.count === 1) return next();
+
+    // PAGE tokens aren't spent — a screen re-fetches constantly and a
+    // single-use token would die on the first refresh.
+    const page = await prisma.override.findFirst({
+      where: {
+        token,
+        scope: "PAGE",
+        expiresAt: { gt: new Date() },
+        requestedById: req.auth?.userId,
+      },
+    });
+    if (page) return next();
   }
-  next();
+
+  // `needsOverride` is the flag the client watches to know it should offer the
+  // manager prompt rather than just showing an error.
+  res.status(403).json({
+    error: "This needs a manager's approval",
+    needsOverride: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +218,116 @@ app.get("/login-roster", async (_req, res) => {
 // below it unless you genuinely mean otherwise.
 // ===========================================================================
 app.use(requireAuth);
+
+// ---------------------------------------------------------------------------
+// ---- Manager override ----
+//
+// Staff hits something admin-only, a manager types their password at the
+// terminal, and the staff member carries on without anyone signing out.
+//
+// These two routes live BELOW the gate above on purpose. The guide this came
+// from said to put them up in the Auth section — but everything above
+// `app.use(requireAuth)` is public, so `req.auth` would be undefined and
+// GET /overrides would have refused everybody, admins included.
+// ---------------------------------------------------------------------------
+
+// How long an approval is good for. ACTION is single-use as well, so two
+// minutes only has to cover typing a password and the request landing.
+const OVERRIDE_MINUTES: Record<string, number> = { ACTION: 2, PAGE: 10 };
+
+// Five wrong passwords locks that staff member's prompt for five minutes.
+// In memory on purpose: a restart clears it, and a fat-fingered password
+// doesn't deserve a permanent row in the database.
+const overrideLockout = new Map<number, { failures: number; lockedUntil: number }>();
+
+app.post("/override", async (req: AuthedRequest, res) => {
+  const staffId = req.auth?.userId;
+  if (!staffId) return res.status(401).json({ error: "Sign in first" });
+
+  const { password, action } = req.body;
+  const scope = req.body.scope === "PAGE" ? "PAGE" : "ACTION";
+  if (typeof password !== "string" || typeof action !== "string" || !password || !action) {
+    return res.status(400).json({ error: "password and action are required" });
+  }
+
+  const record = overrideLockout.get(staffId);
+  if (record && record.lockedUntil > Date.now()) {
+    const seconds = Math.ceil((record.lockedUntil - Date.now()) / 1000);
+    return res.status(429).json({ error: `Too many wrong passwords — try again in ${seconds}s` });
+  }
+
+  // No username was typed, so ask each admin account in turn "is this yours?".
+  // bcrypt.compare is deliberately slow, which is most of what makes guessing
+  // a password while standing at the counter impractical.
+  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  let approver: (typeof admins)[number] | null = null;
+  for (const admin of admins) {
+    if (await bcrypt.compare(password, admin.passwordHash)) {
+      approver = admin;
+      break;
+    }
+  }
+
+  if (!approver) {
+    // Re-read rather than reusing `record` from before the awaits above —
+    // several wrong guesses can be in flight at once, and the stale copy would
+    // keep resetting the count to 1.
+    const now = overrideLockout.get(staffId);
+    const failures = (now?.failures ?? 0) + 1;
+    overrideLockout.set(staffId, {
+      failures,
+      lockedUntil: failures >= 5 ? Date.now() + 5 * 60 * 1000 : 0,
+    });
+    // 403, NOT 401. authFetch treats every 401 as "your session died" and
+    // reloads the page — so a mistyped manager password would have signed the
+    // staff member out mid-void.
+    return res.status(403).json({ error: "That isn't an admin password" });
+  }
+
+  overrideLockout.delete(staffId);
+
+  const override = await prisma.override.create({
+    data: {
+      token: crypto.randomBytes(24).toString("hex"),
+      action: action.slice(0, 120),
+      scope,
+      approvedById: approver.id,
+      requestedById: staffId,
+      expiresAt: new Date(Date.now() + OVERRIDE_MINUTES[scope] * 60 * 1000),
+    },
+  });
+
+  res.status(201).json({
+    token: override.token,
+    scope,
+    approvedBy: approver.displayName,
+    expiresAt: override.expiresAt,
+  });
+});
+
+// The audit trail. Admin-only for real — a staff member holding a PAGE token
+// for Reports should not be able to read who approved what.
+app.get("/overrides", async (req: AuthedRequest, res) => {
+  if (req.auth?.role !== "ADMIN") {
+    return res.status(403).json({ error: "Only the admin login can do this" });
+  }
+  const rows = await prisma.override.findMany({
+    orderBy: { createdAt: "desc" },
+    take: 100,
+    include: { approvedBy: true, requestedBy: true },
+  });
+  res.json(
+    rows.map((o) => ({
+      id: o.id,
+      action: o.action,
+      scope: o.scope,
+      approvedBy: o.approvedBy.displayName,
+      requestedBy: o.requestedBy.displayName,
+      createdAt: o.createdAt,
+      usedAt: o.usedAt,
+    }))
+  );
+});
 
 // ---------------------------------------------------------------------------
 // ---- Settings ----

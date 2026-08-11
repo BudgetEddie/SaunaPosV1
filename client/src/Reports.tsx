@@ -29,6 +29,7 @@
 
 import { useEffect, useState } from "react";
 import { authFetch } from "./authFetch.ts";
+import { useOverride } from "./OverrideProvider.tsx";
 
 // One closed bill in the day's list.
 type BillRow = {
@@ -45,6 +46,19 @@ type BillRow = {
 };
 type TopItem = { name: string; qty: number; revenue: number };
 type Visitor = { id: number; name: string; visits: number; spend: number };
+
+// One manager approval, as the audit log shows it. `usedAt` being null on an
+// ACTION row means a manager typed their password and the thing then didn't
+// happen — a cancelled confirm, a network drop, or second thoughts.
+type OverrideRow = {
+  id: number;
+  action: string;
+  scope: string;
+  approvedBy: string;
+  requestedBy: string;
+  createdAt: string;
+  usedAt: string | null;
+};
 
 // The server's whole answer, in one object. Worth knowing:
 //   total  — everything taken, refunds included
@@ -176,42 +190,78 @@ function Reports() {
   const [scope, setScope] = useState<"day" | "all">("day");  // one day or all time
   const [report, setReport] = useState<Report | null>(null);
   const [denied, setDenied] = useState(false);         // server said no
+  const [approvals, setApprovals] = useState<OverrideRow[]>([]);  // the audit log
   const [receipt, setReceipt] = useState<ReceiptBill | null>(null);  // overlay
 
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
+  const askOverride = useOverride();
+
+  // The permission slip for this screen. "" means an admin who needs none, a
+  // long string means a manager approved it, and null means still locked.
+  //
+  // This one is PAGE scope rather than single-use. Reports re-fetches every
+  // time you change the date, and a single-use approval would die on the first
+  // refresh — a password prompt per date change would be unusable.
+  const [approval, setApproval] = useState<string | null>(isAdmin ? "" : null);
+
+  const unlock = async () => {
+    const token = await askOverride("Open Reports", "PAGE");
+    if (token === null) return;
+    setApproval(token);
+    setDenied(false);
+  };
 
   const load = () => {
-    authFetch(`/reports/daily?date=${date}&scope=${scope}`).then(async (r) => {
-      // A refusal here means this login isn't an admin. Rather than an error
-      // popup, it swaps the whole page for a polite note.
+    if (approval === null) return; // still locked; nothing to fetch yet
+    authFetch(`/reports/daily?date=${date}&scope=${scope}`, {}, approval).then(async (r) => {
+      // A refusal here now means one of two things: not an admin and never
+      // approved, or the ten minutes lapsed. Either way the screen locks and
+      // offers the prompt again rather than dead-ending.
       if (!r.ok) {
         setDenied(true);
+        setApproval(isAdmin ? "" : null);
         return;
       }
       setDenied(false);
       setReport(await r.json());
     });
+
+    // The approval log, admin-only on the server. A staff member who unlocked
+    // this screen shouldn't get to read who approved what, so don't even ask.
+    if (isAdmin) {
+      authFetch(`/overrides`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then(setApprovals)
+        .catch(() => setApprovals([]));
+    }
   };
 
-  // Re-fetch whenever the chosen day or the day/all-time switch changes. This
-  // is the one effect that isn't "run once" — its whole job is to react.
+  // Re-fetch whenever the chosen day, the day/all-time switch, or the approval
+  // changes. Adding `approval` is what makes the report appear the instant a
+  // manager finishes typing.
   useEffect(() => {
-    if (!isAdmin) return;
     load();
     // The linter wants `load` listed here too. It's left out on purpose: `load`
     // is rebuilt on every redraw, so listing it would make this fetch on every
     // redraw as well, in a loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date, scope]);
+  }, [date, scope, approval]);
 
-  // Not an admin — show the note and nothing else. This is a courtesy, not
-  // protection; the real refusal is the server's.
-  if (!isAdmin || denied) {
+  // Locked. Staff see this until a manager approves; it's a courtesy screen,
+  // not the protection — the real refusal is the server's.
+  if (approval === null || denied) {
     return (
       <div style={{ background: "#f4efe7", minHeight: "100vh", padding: "26px" }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: 0 }}>Reports</h1>
-        <p style={{ color: "#a89a86", fontWeight: 600 }}>Only the admin login can view reports.</p>
+        <p style={{ color: "#a89a86", fontWeight: 600, maxWidth: 380, lineHeight: 1.5 }}>
+          {denied
+            ? "That approval has run out. A manager can open it again."
+            : "Reports needs a manager's approval to open."}
+        </p>
+        <button className="ov-btn ov-go" style={{ maxWidth: 220 }} onClick={unlock}>
+          Ask a manager
+        </button>
       </div>
     );
   }
@@ -231,11 +281,16 @@ function Reports() {
     // empty reason — so this check must be against null specifically.
     const reason = prompt(`Refund ${money(bill.total)} to ${bill.customer}?\n\nReason:`);
     if (reason === null) return;
+    // Asked for separately, even on an already-unlocked screen. Looking at
+    // yesterday's takings and handing $80 back are not the same act, so the
+    // screen's PAGE approval deliberately doesn't cover this.
+    const token = await askOverride(`Refund ${money(bill.total)} to ${bill.customer}`);
+    if (token === null) return;
     const res = await authFetch(`/bills/${bill.id}/refund`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reason }),
-    });
+    }, token);
     if (!res.ok) {
       const { error } = await res.json();
       alert(error);
@@ -459,6 +514,43 @@ function Reports() {
               )}
             </div>
           </div>
+
+          {/* Manager approvals — admin only. Every time a manager typed their
+              password for a staff member, with what it was for. A row still
+              reading NOT USED means the approval was granted and then nothing
+              happened; the occasional one is normal, a pattern is worth
+              asking about. */}
+          {isAdmin && (
+            <div style={{ ...PANEL, padding: 18 }}>
+              <div style={{ ...CAPS, marginBottom: 12 }}>Manager approvals</div>
+              {approvals.length === 0 && (
+                <div style={{ fontSize: 13, color: "#a89a86", fontWeight: 600 }}>
+                  Nothing approved yet.
+                </div>
+              )}
+              {approvals.map((a) => (
+                <div
+                  key={a.id}
+                  style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "9px 0", borderTop: "1px solid rgba(43,38,32,.07)" }}
+                >
+                  <div style={{ flex: 1, fontSize: 13.5, fontWeight: 700, color: "#2b2620" }}>
+                    {a.action}
+                    {a.scope === "ACTION" && !a.usedAt && (
+                      <span style={{ marginLeft: 8, fontSize: 10.5, fontWeight: 800, color: "#8f3f28" }}>
+                        NOT USED
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#6b6152" }}>
+                    {a.approvedBy} → {a.requestedBy}
+                  </div>
+                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86", width: 130, textAlign: "right" }}>
+                    {new Date(a.createdAt).toLocaleString()}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

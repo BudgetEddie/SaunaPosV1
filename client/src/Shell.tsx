@@ -83,11 +83,15 @@ function Shell() {
           <NavLink to="/kitchen" className="side-link">Kitchen</NavLink>
           <NavLink to="/lockers" className="side-link">Lockers</NavLink>
           <NavLink to="/tables" className="side-link">Tables</NavLink>
-          {isAdmin && <NavLink to="/reports" className="side-link">Reports</NavLink>}
+          {/* Reports and Menu are no longer hidden from staff. Both now ask
+              for a manager's password on entry, so hiding them just meant a
+              staff member couldn't tell the feature existed. `isAdmin` still
+              decides the caption below. */}
+          <NavLink to="/reports" className="side-link">Reports</NavLink>
           {/* An empty stretchy box that eats all the leftover height, pushing
               Menu and the sign-out button down to the bottom of the sidebar. */}
           <div style={{ flex: 1 }} />
-          {isAdmin && <NavLink to="/menu" className="side-link">Menu</NavLink>}
+          <NavLink to="/menu" className="side-link">Menu</NavLink>
           <div style={{ padding: "12px 18px 6px", fontSize: 12, color: "rgba(244,239,231,.55)" }}>
             {user.displayName} · {isAdmin ? "admin" : "staff"}
           </div>

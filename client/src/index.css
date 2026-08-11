@@ -468,3 +468,89 @@ body {
 .mn-row:hover {
   background: #f7f3ea;
 }
+
+/* ---------------------------------------------------------------------------
+   ---- Manager override ----
+   The password prompt in OverrideProvider.tsx. It floats above every screen,
+   so it's the one thing in this file with a z-index that matters.
+   `fadeIn` and `popIn` are reused from the checkout and kitchen phases above.
+   --------------------------------------------------------------------------- */
+
+.ov-back {
+  position: fixed;
+  inset: 0;
+  background: rgba(43, 38, 32, 0.42);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  animation: fadeIn 0.12s ease-out;
+}
+
+.ov-card {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  background: #fffdf9;
+  border: 1px solid rgba(43, 38, 32, 0.1);
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(43, 38, 32, 0.24);
+  padding: 22px 22px 20px;
+  animation: popIn 0.14s ease-out;
+}
+
+.ov-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #a89a86;
+}
+
+.ov-in {
+  width: 100%;
+  border: 1.5px solid #d8cebc;
+  outline: none;
+  background: #fffdf9;
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2b2620;
+  box-sizing: border-box;
+}
+.ov-in:focus {
+  border-color: #7a6a53;
+}
+
+.ov-err {
+  margin-top: 10px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #a4442c;
+}
+
+.ov-btn {
+  flex: 1;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.ov-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ov-ghost {
+  background: #fffdf9;
+  border: 1.5px solid #d8cebc;
+  color: #7a6a53;
+}
+.ov-go {
+  background: #7a6a53;
+  border: 1.5px solid #7a6a53;
+  color: #fffdf9;
+}
