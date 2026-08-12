@@ -64,6 +64,10 @@ type Draft = {
   sendsToKitchen: boolean;
   visitCredits: string;
   redeemsPass: boolean;
+  // "" means an ordinary item. Held as text like price and tax, so a
+  // half-typed figure doesn't get forced into a number as you type.
+  discountKind: "" | "FIXED" | "PERCENT";
+  discountValue: string;
 };
 
 const LABEL: React.CSSProperties = {
@@ -93,7 +97,9 @@ const CHIP_BTN: React.CSSProperties = {
 };
 
 function money(n: number) {
-  return `$${n.toFixed(2)}`;
+  // Discounts are negative, and "$-5.00" reads like a typo. Put the minus in
+  // front of the whole thing — "−$5.00" — the way a receipt would.
+  return n < 0 ? `−$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
 }
 // A fresh, empty item — new items start on sale and at the house tax rate.
 function blankDraft(categoryId: number, defaultTaxPercent: string): Draft {
@@ -109,6 +115,8 @@ function blankDraft(categoryId: number, defaultTaxPercent: string): Draft {
     sendsToKitchen: true,
     visitCredits: "0",
     redeemsPass: false,
+    discountKind: "",
+    discountValue: "",
   };
 }
 
@@ -209,6 +217,8 @@ function MenuPage() {
       imageData: item.imageData,
       available: item.available,
       sendsToKitchen: item.sendsToKitchen,
+      discountKind: (item.discountKind === "FIXED" || item.discountKind === "PERCENT") ? item.discountKind : "",
+      discountValue: item.discountKind ? String(item.discountValue) : "",
       visitCredits: String(item.visitCredits),
       redeemsPass: item.redeemsPass,
     });
@@ -289,6 +299,8 @@ function MenuPage() {
       imageData: draft.imageData,
       available: draft.available,
       sendsToKitchen: draft.sendsToKitchen,
+      discountKind: draft.discountKind || null,
+      discountValue: parseFloat(draft.discountValue) || 0,
       visitCredits: parseInt(draft.visitCredits, 10) || 0,
       redeemsPass: draft.redeemsPass,
     };
@@ -392,6 +404,8 @@ function MenuPage() {
   // kitchen.
   const draftCategory = draft ? categories.find((c) => String(c.id) === draft.categoryId) ?? null : null;
   const isMerch = draftCategory?.group === "MERCH_SERVICE";
+  // A discount hides the price and tax boxes — it has neither of its own.
+  const isDiscount = draft?.discountKind === "FIXED" || draft?.discountKind === "PERCENT";
   // A live "with tax, this comes to…" preview while typing a price.
   const draftPrice = parseFloat(draft?.price ?? "") || 0;
   const draftGross = draftPrice * (1 + (parseFloat(draft?.taxPercent ?? "") || 0) / 100);
@@ -566,7 +580,13 @@ function MenuPage() {
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.2 }}>{item.name}</div>
                             <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86", marginTop: 2 }}>
-                              Tax {(item.taxRate * 100).toFixed(2)}% · {money(item.price * (1 + item.taxRate))} with tax
+                              {/* A discount has no price to show — what matters
+                                  is how much it takes off, so say that instead. */}
+                              {item.discountKind
+                                ? item.discountKind === "PERCENT"
+                                  ? `Discount · ${item.discountValue}% off the tab`
+                                  : `Discount · ${money(item.discountValue)} off`
+                                : `Tax ${(item.taxRate * 100).toFixed(2)}% · ${money(item.price * (1 + item.taxRate))} with tax`}
                               {/* Only meaningful on food and drink — a towel that
                                   doesn't go to the kitchen isn't worth remarking on. */}
                               {category.group === "FOOD_DRINK" && !item.sendsToKitchen ? " · self-serve" : ""}
@@ -698,15 +718,71 @@ function MenuPage() {
                 <input className="mn-in" placeholder="e.g. Miso Poké Bowl" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <div style={LABEL}>Price</div>
-                  <input className="mn-in" placeholder="0.00" value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} />
+              {/* A discount has no price and no tax rate of its own — it takes
+                  a share off whatever is already on the tab, and carries that
+                  tab's blended tax rate so the tax falls with it. Showing empty
+                  Price and Tax boxes would just invite someone to fill them in
+                  and wonder why nothing happened. */}
+              {!isDiscount && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div>
+                    <div style={LABEL}>Price</div>
+                    <input className="mn-in" placeholder="0.00" value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} />
+                  </div>
+                  <div>
+                    <div style={LABEL}>Tax rate %</div>
+                    <input className="mn-in" placeholder="13.00" value={draft.taxPercent} onChange={(e) => setDraft({ ...draft, taxPercent: e.target.value })} />
+                  </div>
                 </div>
-                <div>
-                  <div style={LABEL}>Tax rate %</div>
-                  <input className="mn-in" placeholder="13.00" value={draft.taxPercent} onChange={(e) => setDraft({ ...draft, taxPercent: e.target.value })} />
+              )}
+
+              {/* ---- Is this a discount? ---- */}
+              <div style={{ background: "#f7f3ea", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 11 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>This item is a discount</div>
+                    <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
+                      Takes money off a tab instead of adding to it. Needs a manager's approval to use.
+                    </div>
+                  </div>
+                  <div
+                    onClick={() => setDraft({ ...draft, discountKind: isDiscount ? "" : "PERCENT", discountValue: isDiscount ? "" : draft.discountValue })}
+                    style={{ width: 46, height: 26, flex: "none", borderRadius: 20, background: isDiscount ? "#5f7a5a" : "#d8cebc", position: "relative", cursor: "pointer", transition: "background .15s" }}
+                  >
+                    <div style={{ position: "absolute", top: 3, left: isDiscount ? 23 : 3, width: 20, height: 20, borderRadius: "50%", background: "#fffdf9", transition: "left .15s" }} />
+                  </div>
                 </div>
+
+                {isDiscount && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+                    <div>
+                      <div style={LABEL}>How it's worked out</div>
+                      <div style={{ display: "inline-flex", background: "#e7e0d5", borderRadius: 11, padding: 3, gap: 3 }}>
+                        {([["PERCENT", "Percent off"], ["FIXED", "Amount off"]] as const).map(([id, label]) => {
+                          const on = draft.discountKind === id;
+                          return (
+                            <div
+                              key={id}
+                              onClick={() => setDraft({ ...draft, discountKind: id })}
+                              style={{ padding: "7px 13px", borderRadius: 9, cursor: "pointer", fontSize: 12.5, fontWeight: 700, background: on ? "#fffdf9" : "transparent", color: on ? "#2b2620" : "#8a7d6a", boxShadow: on ? "0 1px 3px rgba(43,38,32,.12)" : "none" }}
+                            >
+                              {label}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={LABEL}>{draft.discountKind === "PERCENT" ? "Percent off the tab" : "Dollars off"}</div>
+                      <input
+                        className="mn-in"
+                        placeholder={draft.discountKind === "PERCENT" ? "20" : "5.00"}
+                        value={draft.discountValue}
+                        onChange={(e) => setDraft({ ...draft, discountValue: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>

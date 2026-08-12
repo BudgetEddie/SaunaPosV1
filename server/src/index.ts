@@ -492,6 +492,13 @@ function menuItemData(body: Record<string, unknown>) {
     // just below, which is whether choosing it SPENDS one.
     visitCredits: Number(body.visitCredits) || 0,
     redeemsPass: Boolean(body.redeemsPass),
+    // Only ever "FIXED" or "PERCENT" — anything else means it isn't a
+    // discount, so it lands as null rather than being taken on trust.
+    discountKind:
+      body.discountKind === "FIXED" || body.discountKind === "PERCENT"
+        ? String(body.discountKind)
+        : null,
+    discountValue: Number(body.discountValue) || 0,
   };
 }
 
@@ -883,6 +890,83 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
 
   io.emit("bill:line-item-added", { billId });
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// APPLY A DISCOUNT to a guest's tab. Employee discounts, mainly.
+//
+// requireAdmin is doing real work here. A staff member deciding their own
+// discount is the exact thing this guards against — so an ordinary staff login
+// can only get through by having a manager type their password, which mints
+// the override token that requireAdmin accepts. Every one lands in the log.
+//
+// AND the figure is worked out HERE, not in the browser. The browser only says
+// WHICH discount to apply. If it sent the amount instead, the manager's
+// password would be protecting a number the staff member had already chosen —
+// which would make the whole approval theatre.
+//
+// It reads charges already on the tab, so items sitting in an unconfirmed cart
+// aren't counted: staff ring up first, then discount.
+// ---------------------------------------------------------------------------
+app.post("/visits/:visitId/apply-discount", requireAdmin, async (req, res) => {
+  const visitId = Number(req.params.visitId);
+  const { menuItemId } = req.body;
+
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: { bill: { include: { lineItems: true } } },
+  });
+  if (!visit || visit.checkOutAt || !visit.bill) {
+    return res.status(404).json({ error: "Active visit not found" });
+  }
+  // Once a bill is settled it's read-only — undoing it means a refund, the
+  // same rule that stops charges being voided after payment.
+  if (visit.bill.paidAt) {
+    return res.status(409).json({ error: "That bill is already paid — a refund is the way back" });
+  }
+
+  const item = await prisma.menuItem.findUnique({ where: { id: menuItemId } });
+  if (!item || !item.discountKind) {
+    return res.status(400).json({ error: "That menu item isn't a discount" });
+  }
+
+  // What's on the tab right now. A second discount therefore works off the
+  // already-discounted figure rather than the original, which is the sane
+  // reading of "20% off" applied twice.
+  const subtotal = visit.bill.lineItems.reduce((sum, li) => sum + li.amount, 0);
+  const taxSoFar = visit.bill.lineItems.reduce((sum, li) => sum + li.amount * li.taxRate, 0);
+
+  let off = item.discountKind === "PERCENT"
+    ? subtotal * (item.discountValue / 100)
+    : item.discountValue;
+
+  // Never hand money back through a discount. A $50 discount on a $12 tab
+  // takes it to zero, not to −$38.
+  if (off > subtotal) off = subtotal;
+  if (off <= 0) {
+    return res.status(400).json({ error: "There's nothing on this tab to discount" });
+  }
+
+  // The discount carries the tab's BLENDED tax rate — the tax already on the
+  // bill divided by its subtotal. That makes tax fall by exactly the same
+  // proportion as the goods, which comes out right even when the tab mixes
+  // rates: 20% off a tab of 13% food and 0% food removes 20% of the tax too,
+  // not 13% of the discount.
+  const blendedRate = subtotal > 0 ? taxSoFar / subtotal : 0;
+
+  const line = await prisma.billLineItem.create({
+    data: {
+      billId: visit.bill.id,
+      description: item.name,
+      amount: -off,          // negative — this is the only thing that makes one
+      taxRate: blendedRate,
+    },
+  });
+
+  // Same shout every other charge makes, so open tabs update themselves on
+  // every terminal without anything new to listen for.
+  io.emit("bill:line-item-added", { visitId, line });
+  res.status(201).json(line);
 });
 
 // Flag a locker as broken, or return it to service.
@@ -1303,6 +1387,11 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
   for (const b of paidBills) {
     if (b.refundedAt) continue;
     for (const li of b.lineItems) {
+      // Skip discounts. A negative charge is the only way one is written, and
+      // "best sellers" should list what was sold, not what was given away. The
+      // day's total, net and tax all still include it — the money is right,
+      // it just isn't a seller.
+      if (li.amount < 0) continue;
       const row = sellers.get(li.description) ?? { name: li.description, qty: 0, revenue: 0 };
       row.qty += 1;
       row.revenue += li.amount;

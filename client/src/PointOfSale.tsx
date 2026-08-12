@@ -33,6 +33,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
+import { useOverride } from "./OverrideProvider.tsx";
 import Checkout from "./Checkout.tsx";
 import { type Category, type Locker, type MenuItem, type Visit } from "./types.ts";
 
@@ -160,7 +161,15 @@ function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmi
                     <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.25 }}>{item.name}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: "#7a6a53" }}>{money(item.price)}</span>
+                    {/* A discount has no price. Show what it takes off instead,
+                        so staff can tell a 20% tile from a $5 one at a glance. */}
+                    <span style={{ fontSize: 13, fontWeight: 800, color: item.discountKind ? "#8f3f28" : "#7a6a53" }}>
+                      {item.discountKind
+                        ? item.discountKind === "PERCENT"
+                          ? `${item.discountValue}% off`
+                          : `−${money(item.discountValue)}`
+                        : money(item.price)}
+                    </span>
                     {/* So nobody stands waiting on a kitchen that isn't cooking
                         this. Only appears where it's a surprise: a food or drink
                         tile that won't print a ticket. */}
@@ -285,7 +294,9 @@ function CartPanel({ lines, onBump, onNote, onClear, subtotal, tax, children }: 
 }
 
 function money(n: number) {
-  return `$${n.toFixed(2)}`;
+  // Discounts are negative, and "$-5.00" reads like a typo. Put the minus in
+  // front of the whole thing — "−$5.00" — the way a receipt would.
+  return n < 0 ? `−$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
 }
 function initials(first: string, last: string) {
   return `${first[0] ?? ""}${last[0] ?? ""}`.toUpperCase();
@@ -411,6 +422,10 @@ function PointOfSale() {
   // tomorrow. It's per terminal, so a busy front desk can sit on the list while
   // another screen keeps the cards. To make it always start on cards instead,
   // delete the localStorage lines and use useState<"cards" | "list">("cards").
+  // Summons the manager-password box. Only discounts need it on this screen —
+  // an admin gets "" straight back and is never prompted.
+  const askOverride = useOverride();
+
   const [view, setView] = useState<"cards" | "list">(
     () => (localStorage.getItem("posView") === "list" ? "list" : "cards")
   );
@@ -571,6 +586,25 @@ function PointOfSale() {
   //
   //   Everything else just goes in the cart.
   const pickItem = async (item: MenuItem, category: Category) => {
+    // A DISCOUNT never goes in the cart. Like admission, it goes straight to
+    // the server — and for a stronger reason: the server works out the figure
+    // from the real bill. If the browser sent an amount, the manager's password
+    // would be approving a number the staff member had already chosen.
+    if (item.discountKind) {
+      if (!selected) return;
+      // The guest's name goes in the label so the approvals log reads
+      // "Employee discount for Tob Lerone" rather than just "discount".
+      const who = `${selected.customer.firstName} ${selected.customer.lastName}`;
+      const token = await askOverride(`${item.name} for ${who}`);
+      if (token === null) return; // manager cancelled
+      await showError(await authFetch(`/visits/${selected.id}/apply-discount`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ menuItemId: item.id }),
+      }, token));
+      loadVisits();
+      return;
+    }
     // Pass packs live inside the Visit category but are ordinary sales — this
     // check has to come first, or selling one would overwrite the entry charge.
     if (item.visitCredits === 0 && category.isAdmission) {

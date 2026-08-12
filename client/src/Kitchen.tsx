@@ -81,7 +81,9 @@ const LABEL: React.CSSProperties = {
 };
 
 function money(n: number) {
-  return `$${n.toFixed(2)}`;
+  // Discounts are negative, and "$-5.00" reads like a typo. Put the minus in
+  // front of the whole thing — "−$5.00" — the way a receipt would.
+  return n < 0 ? `−$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
 }
 function initials(first: string, last: string) {
   return `${first[0] ?? ""}${last[0] ?? ""}`.toUpperCase();

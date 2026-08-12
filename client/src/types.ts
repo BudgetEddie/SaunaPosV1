@@ -57,6 +57,12 @@ export type MenuItem = {
   sendsToKitchen: boolean;
   visitCredits: number;
   redeemsPass: boolean;
+  // Null on anything you actually sell. "FIXED" takes dollars off a tab,
+  // "PERCENT" takes a share off. The server works out the figure — the browser
+  // only ever says which discount to apply.
+  discountKind: string | null;
+  // Dollars off for FIXED (5 = −$5.00), the rate for PERCENT (20 = 20%).
+  discountValue: number;
 };
 
 // A menu section, with its items nested inside. Two flags drive behaviour:

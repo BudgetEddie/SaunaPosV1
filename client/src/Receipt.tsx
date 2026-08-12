@@ -68,7 +68,9 @@ type BillData = {
 // 4.5 → "$4.50". This tiny helper is redefined in six screens rather than
 // shared; it's two lines, so nobody has bothered to centralise it.
 function money(n: number) {
-  return `$${n.toFixed(2)}`;
+  // Discounts are negative, and "$-5.00" reads like a typo. Put the minus in
+  // front of the whole thing — "−$5.00" — the way a receipt would.
+  return n < 0 ? `−$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
 }
 
 // One line of the receipt: label on the left, figure pushed to the right.

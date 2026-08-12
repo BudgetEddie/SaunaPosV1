@@ -123,7 +123,9 @@ const MICRO: React.CSSProperties = {
 const BILL_COLS = "1fr 1.5fr .7fr 1fr 1fr 1.1fr";
 
 function money(n: number) {
-  return `$${n.toFixed(2)}`;
+  // Discounts are negative, and "$-5.00" reads like a typo. Put the minus in
+  // front of the whole thing — "−$5.00" — the way a receipt would.
+  return n < 0 ? `−$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`;
 }
 function initials(name: string) {
   const p = name.trim().split(/\s+/);

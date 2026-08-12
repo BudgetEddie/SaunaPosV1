@@ -197,6 +197,16 @@ model MenuItem {
   // both on the same item.
   visitCredits Int      @default(0)
   redeemsPass  Boolean  @default(false)
+  // A DISCOUNT, not something you sell. Null on every ordinary item.
+  //   "FIXED"   — takes a set number of dollars off
+  //   "PERCENT" — takes a share off whatever is already on the tab
+  // `price` stays 0 on these. Storing a negative price instead would mean
+  // special-casing every place that shows what something costs — the till
+  // tile, the "with tax" line in the editor, the receipt.
+  discountKind  String?
+  // For FIXED, dollars off: 5 means −$5.00.
+  // For PERCENT, the rate: 20 means 20% off.
+  discountValue Float   @default(0)
 }
 
 // A guest. The `?` fields are optional — only a name and gender are required,
