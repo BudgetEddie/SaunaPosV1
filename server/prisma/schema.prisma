@@ -302,6 +302,18 @@ model Order {
   status    OrderStatus @default(QUEUED)
   createdAt DateTime    @default(now()) // drives the "waiting 6 min" clock
   items     OrderItem[]
+  // WHERE TO TAKE IT, when the guest is sitting in the lounge rather than
+  // waiting at their locker. Optional — most orders have none, and the cook
+  // falls back to the locker number as before.
+  //
+  // It hangs off the ORDER, not the visit, because staff choose it per order:
+  // a guest can eat at one table and order again from another. That's also why
+  // a second order to a DIFFERENT table starts a new ticket instead of joining
+  // the existing one — one card, one destination.
+  //
+  // Takeout never has one. There's nobody sitting anywhere.
+  tableId   Int?
+  table     Table?      @relation(fields: [tableId], references: [id])
 }
 
 // One thing to make. Note there's no price here — the money side lives on the
@@ -383,6 +395,10 @@ model Table {
   // Why it's out of use — "broken chair", "spill". Optional, and cleared when
   // the table returns to service so it never describes a working table.
   maintenanceNote String?
+  // Kitchen tickets being run out to this table. The only thing that has ever
+  // pointed at a Table — so removing one is no longer a plain delete, and the
+  // count endpoint has to reckon with it.
+  orders          Order[]
 }
 
 enum TableStatus {

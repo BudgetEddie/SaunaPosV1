@@ -44,6 +44,9 @@ type KitchenOrder = {
   status: string;
   createdAt: string;
   items: OrderItemRow[];
+  // Where to run it, when the guest is sitting in the lounge instead of waiting
+  // at their locker. Null on most tickets, and always null for takeout.
+  table: { number: string } | null;
   visit: {
     id: number;
     // STAY or TAKEOUT. A takeout ticket has no customer and no locker — it's
@@ -99,9 +102,13 @@ function ticketName(visit: KitchenOrder["visit"]) {
   if (visit.customer) return `${visit.customer.firstName} ${visit.customer.lastName}`;
   return visit.takeoutName?.trim() || "Takeout";
 }
-// And the line under it — the locker to walk it to, or the number to call out.
-function ticketTag(visit: KitchenOrder["visit"]) {
-  return visit.locker ? visit.locker.number : `#${visit.takeoutNumber ?? "?"}`;
+// And the line under it — WHERE this food is going. A table wins when there is
+// one: a guest sitting in the lounge is somewhere specific, whereas their
+// locker number only says which bench to look near. Falls back to the locker,
+// then to the number called out for takeout.
+function ticketTag(order: KitchenOrder) {
+  if (order.table) return `Table ${order.table.number}`;
+  return order.visit.locker ? order.visit.locker.number : `#${order.visit.takeoutNumber ?? "?"}`;
 }
 
 function minutesSince(iso: string) {
@@ -379,7 +386,7 @@ function Kitchen() {
                               <path d="M5.5 1C3.6 1 2 2.5 2 4.4c0 2.4 3.5 5.6 3.5 5.6S9 6.8 9 4.4C9 2.5 7.4 1 5.5 1z" stroke="#a89a86" strokeWidth="1.3" />
                               <circle cx="5.5" cy="4.3" r="1.1" fill="#a89a86" />
                             </svg>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>{ticketTag(order.visit)}</span>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>{ticketTag(order)}</span>
                           </div>
                         </div>
                         <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: late ? "#8f3f28" : "#a89a86", background: late ? "#f7e4dc" : "#f0ebe1", padding: "4px 9px", borderRadius: 20 }}>

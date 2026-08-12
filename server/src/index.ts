@@ -1101,9 +1101,24 @@ app.post("/lockers/:lockerId/status", async (req, res) => {
 
 // ---- Tables ----------------------------------------------------------------
 
+// The digits on the end of a table's name. "T7" → 7, "Patio 12" → 12, and
+// anything with no number at all → -1 so it sorts to the front and is the last
+// thing a shrink would ever remove.
+//
+// Sorting by the NAME as text puts T10 before T2, which is how the board has
+// been showing them: T1, T10, T11 … T16, T2, T3. Lockers dodged this by being
+// called M01–M60; tables were named T1–T16 without the padding. Sorting on the
+// number rather than renaming the rows keeps live data untouched and still
+// works if a table is ever called something like "Patio 3".
+function tableNumberOf(name: string) {
+  const digits = name.match(/(\d+)\s*$/);
+  return digits ? Number(digits[1]) : -1;
+}
+
 // Every table and its status. No filtering — the board shows the whole lounge.
 app.get("/tables", async (_req, res) => {
-  const tables = await prisma.table.findMany({ orderBy: { number: "asc" } });
+  const tables = await prisma.table.findMany();
+  tables.sort((a, b) => tableNumberOf(a.number) - tableNumberOf(b.number) || a.number.localeCompare(b.number));
   res.json(tables);
 });
 
@@ -1157,6 +1172,102 @@ app.post("/tables/:tableId/status", async (req, res) => {
   res.json(updated);
 });
 
+// ---------------------------------------------------------------------------
+// HOW MANY TABLES ARE THERE? Set the total and the lounge is made to match.
+//
+// Replaces editing the list in prisma/seed-tables.ts and re-running it, which
+// was a developer job. Growing adds tables on the end; shrinking takes the
+// highest-numbered ones away.
+//
+// Behind requireAdmin, so an ordinary staff login can only do this by having a
+// manager type their password — and every use lands in the approvals log.
+//
+// Deleting a table is safe in a way that's worth stating: nothing in the
+// schema points at Table, so removing one leaves nothing orphaned. That's the
+// whole reason this can be a plain delete rather than a "hidden" flag.
+// ---------------------------------------------------------------------------
+app.put("/tables/count", requireAdmin, async (req, res) => {
+  const total = Number(req.body.total);
+  if (!Number.isInteger(total) || total < 0 || total > 200) {
+    return res.status(400).json({ error: "Give a whole number of tables between 0 and 200" });
+  }
+  // Optional. New tables get this many seats; leaving it blank means the board
+  // simply won't show a seat count for them.
+  const seats = req.body.seats === undefined || req.body.seats === null || req.body.seats === ""
+    ? null
+    : Number(req.body.seats);
+  if (seats !== null && (!Number.isInteger(seats) || seats < 0 || seats > 99)) {
+    return res.status(400).json({ error: "Seats must be a whole number, or left blank" });
+  }
+
+  const tables = await prisma.table.findMany();
+  const sorted = [...tables].sort((a, b) => tableNumberOf(a.number) - tableNumberOf(b.number));
+
+  // ---- Shrinking: take the highest-numbered ones away ----
+  if (total < sorted.length) {
+    const doomed = sorted.slice(total);
+    // Refuse the WHOLE operation if any of them is in use, rather than
+    // skipping down to the next free one — that would quietly delete a table
+    // the admin never intended to lose.
+    const busy = doomed.filter((t) => t.status === "OCCUPIED");
+    if (busy.length > 0) {
+      const names = busy.map((t) => t.number).join(", ");
+      return res.status(409).json({
+        error: `${names} ${busy.length === 1 ? "is" : "are"} occupied. Clear ${busy.length === 1 ? "it" : "them"} first.`,
+      });
+    }
+    await prisma.table.deleteMany({ where: { id: { in: doomed.map((t) => t.id) } } });
+  }
+
+  // ---- Growing: add on the end ----
+  if (total > sorted.length) {
+    // Counted from the highest NAME, not from how many there are. If T5 was
+    // removed at some point there are 15 tables but the highest is still T16,
+    // and numbering from the count would try to create a second T16.
+    let next = sorted.reduce((high, t) => Math.max(high, tableNumberOf(t.number)), 0) + 1;
+    const taken = new Set(tables.map((t) => t.number));
+    const fresh: { number: string; seats: number | null }[] = [];
+    while (fresh.length < total - sorted.length) {
+      const number = `T${next}`;
+      next++;
+      if (taken.has(number)) continue; // belt and braces against an odd name
+      fresh.push({ number, seats });
+    }
+    await prisma.table.createMany({ data: fresh });
+  }
+
+  // total === sorted.length falls through both blocks and changes nothing.
+  io.emit("table:updated", {});
+  const after = await prisma.table.count();
+  res.json({ total: after });
+});
+
+// How many people ONE table takes. Setting the total above gives every new
+// table the same seat count, which is fine when a lounge is uniform and no use
+// when it isn't — a two-seater by the window next to a six-seater.
+//
+// Blank clears it, and the board then simply shows no seat count for that
+// table, exactly as it does for one that never had one.
+app.put("/tables/:tableId/seats", requireAdmin, async (req, res) => {
+  const tableId = Number(req.params.tableId);
+  const seats = req.body.seats === undefined || req.body.seats === null || req.body.seats === ""
+    ? null
+    : Number(req.body.seats);
+  if (seats !== null && (!Number.isInteger(seats) || seats < 0 || seats > 99)) {
+    return res.status(400).json({ error: "Seats must be a whole number, or left blank" });
+  }
+
+  const table = await prisma.table.findUnique({ where: { id: tableId } });
+  if (!table) return res.status(404).json({ error: "Table not found" });
+
+  // Deliberately allowed whatever the table is doing. A seat count describes
+  // the furniture, not the guests — correcting it while someone's sitting there
+  // changes nothing about their meal.
+  const updated = await prisma.table.update({ where: { id: tableId }, data: { seats } });
+  io.emit("table:updated", updated);
+  res.json(updated);
+});
+
 // Confirm a pending order: every item hits the bill, kitchen items join ONE
 // kitchen order, pass credits apply — all in a single transaction.
 //
@@ -1169,6 +1280,9 @@ app.post("/tables/:tableId/status", async (req, res) => {
 app.post("/visits/:visitId/confirm-order", async (req, res) => {
   const visitId = Number(req.params.visitId);
   const { items } = req.body;
+  // Optional. Which table in the lounge to run the food out to, when the guest
+  // isn't waiting at their locker. Null for the great majority of orders.
+  const tableId = req.body.tableId ? Number(req.body.tableId) : null;
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "No items to confirm" });
   }
@@ -1181,6 +1295,23 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
   const visit = await prisma.visit.findUnique({ where: { id: visitId }, include: { bill: true } });
   if (!visit || visit.checkOutAt || !visit.bill) {
     return res.status(404).json({ error: "Active visit not found" });
+  }
+  // A table only makes sense for someone sitting in the building. Takeout is
+  // paid at the counter and walks out, so it never reaches here anyway — this
+  // says so out loud rather than relying on that.
+  if (tableId !== null && visit.kind === "TAKEOUT") {
+    return res.status(400).json({ error: "A takeout order isn't sitting at a table" });
+  }
+  let table = null;
+  if (tableId !== null) {
+    table = await prisma.table.findUnique({ where: { id: tableId } });
+    if (!table) return res.status(404).json({ error: "Table not found" });
+    // Occupied is fine — two friends on separate tabs can share a table, which
+    // is ordinary at a bathhouse. Out of service is not: nobody should be sent
+    // to run food to a table that isn't there.
+    if (table.status === "MAINTENANCE") {
+      return res.status(409).json({ error: `Table ${table.number} is out of service` });
+    }
   }
   const billId = visit.bill.id;
   // Pulled out as its own value rather than read off `visit` later, because the
@@ -1222,13 +1353,26 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
     //    un-started ticket if there is one, so a second round of drinks lands
     //    on the same card rather than making the cook juggle two.
     if (kitchenItems.length > 0) {
-      let order = await tx.order.findFirst({ where: { visitId, status: "QUEUED" } });
+      // Joins the guest's un-started ticket only if it's going to the SAME
+      // place. A second round for a different table starts its own card —
+      // otherwise the cook would hold one ticket naming two destinations and
+      // have to guess which half goes where.
+      let order = await tx.order.findFirst({ where: { visitId, status: "QUEUED", tableId } });
       if (!order) {
-        order = await tx.order.create({ data: { visitId } });
+        order = await tx.order.create({ data: { visitId, tableId } });
       }
       for (const it of kitchenItems) {
         await tx.orderItem.create({
           data: { orderId: order.id, name: it.name, note: it.note || null },
+        });
+      }
+      // Somebody is sitting there, so the board should say so. Only nudges a
+      // free table — an occupied one is already right, and this never touches
+      // one that's out of service because that was refused above.
+      if (table && table.status === "AVAILABLE") {
+        await tx.table.update({
+          where: { id: table.id },
+          data: { status: "OCCUPIED", occupiedSince: new Date() },
         });
       }
     }
@@ -1584,7 +1728,8 @@ app.get("/bills/:id", async (req, res) => {
 app.get("/orders/open", async (_req, res) => {
   const orders = await prisma.order.findMany({
     where: { status: { not: "COMPLETE" } },
-    include: { items: true, visit: { include: { customer: true, locker: true } } },
+    // `table` so the cook knows where to run it — see ticketWhere in Kitchen.tsx.
+    include: { items: true, table: true, visit: { include: { customer: true, locker: true } } },
     orderBy: { createdAt: "asc" },
   });
   res.json(orders);
@@ -1710,6 +1855,35 @@ app.post("/check-out", async (req, res) => {
       where: { visitId, status: { not: "COMPLETE" } },
       data: { status: "COMPLETE" },
     });
+
+    // 4b. Free any lounge table this guest was eating at. Their tickets are all
+    //     closed by the line above, so the only thing that can still hold a
+    //     table is SOMEBODY ELSE — two friends on separate tabs sharing one
+    //     table is ordinary here, and the first to leave must not clear it out
+    //     from under the second.
+    const wasSeatedAt = await tx.order.findMany({
+      where: { visitId, tableId: { not: null } },
+      select: { tableId: true },
+      distinct: ["tableId"],
+    });
+    for (const { tableId: usedTableId } of wasSeatedAt) {
+      if (usedTableId === null) continue;
+      const stillInUse = await tx.order.count({
+        where: {
+          tableId: usedTableId,
+          status: { not: "COMPLETE" },
+          visit: { checkOutAt: null },
+        },
+      });
+      if (stillInUse === 0) {
+        await tx.table.updateMany({
+          // updateMany with the status in the WHERE so a table somebody has
+          // since flagged out of service isn't quietly returned to the pool.
+          where: { id: usedTableId, status: "OCCUPIED" },
+          data: { status: "AVAILABLE", occupiedSince: null },
+        });
+      }
+    }
 
     // 5. Spend one visit pass, if this visit was checked in on one
     //    THIS is where a pass is finally deducted — not at check-in. Buying

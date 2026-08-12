@@ -454,6 +454,11 @@ function PointOfSale() {
   // without looking it up again.
   const [sponsorFor, setSponsorFor] = useState<MenuItem | null>(null);
 
+  // Which lounge table this order is going to, if any. Optional and reset after
+  // every confirm — staff answer it per order, not once per guest.
+  const [orderTableId, setOrderTableId] = useState("");
+  const [tables, setTables] = useState<{ id: number; number: string; status: string }[]>([]);
+
   const [view, setView] = useState<"cards" | "list">(
     () => (localStorage.getItem("posView") === "list" ? "list" : "cards")
   );
@@ -465,6 +470,9 @@ function PointOfSale() {
   const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
   const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
+  // For the "run it to a table" picker. Out-of-service tables are filtered out
+  // in the dropdown below rather than here, so the list stays a plain mirror.
+  const loadTables = () => authFetch(`/tables`).then((r) => r.json()).then(setTables);
   const loadSettings = () =>
     authFetch(`/settings`).then((r) => r.json()).then((s) => setDefaultTaxRate(s.taxRate));
 
@@ -472,6 +480,7 @@ function PointOfSale() {
     loadVisits();
     loadLockers();
     loadMenu();
+    loadTables();
     loadSettings();
 
     // Live updates from other terminals. As everywhere in this app, the
@@ -487,6 +496,7 @@ function PointOfSale() {
     socket.on("orders:changed", refresh);
     socket.on("customer:updated", refresh);
     socket.on("menu:updated", loadMenu);
+    socket.on("table:updated", loadTables);
 
     const timer = setInterval(() => setTick((t) => t + 1), 60000);
 
@@ -500,6 +510,7 @@ function PointOfSale() {
       socket.off("orders:changed", refresh);
       socket.off("customer:updated", refresh);
       socket.off("menu:updated", loadMenu);
+      socket.off("table:updated", loadTables);
       clearInterval(timer);
     };
   }, []);
@@ -711,9 +722,14 @@ function PointOfSale() {
       const ok = await showError(await authFetch(`/visits/${selected.id}/confirm-order`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items }),
+        // Optional. Sent only when staff picked somewhere to run it.
+        body: JSON.stringify({ items, tableId: orderTableId ? Number(orderTableId) : null }),
       }));
       if (!ok) return;
+      // Cleared after every order, not kept. The table is answered per order,
+      // so leaving the last one selected would silently send the next round to
+      // a table nobody chose.
+      setOrderTableId("");
       // Empty the cart and flash the button green for a couple of seconds, so
       // there's visible confirmation the tab was actually updated.
       setCart({});
@@ -1184,6 +1200,34 @@ function PointOfSale() {
             subtotal={cartSubtotal}
             tax={cartTax}
           >
+            {/* WHERE TO RUN IT. Optional, and only on the guest till — the
+                takeout board above never renders this, because a takeout order
+                is collected at the counter rather than carried anywhere.
+                Only shown when the cart has something the kitchen will cook;
+                a towel and a bottled water need no table. */}
+            {cartLines.some((l) => l.isKitchen) && (
+              <div style={{ marginTop: 8 }}>
+                <div style={MICRO}>Run it to (optional)</div>
+                <select
+                  className="cd-in"
+                  value={orderTableId}
+                  onChange={(e) => setOrderTableId(e.target.value)}
+                  style={{ width: "100%", marginTop: 5 }}
+                >
+                  <option value="">Their locker</option>
+                  {/* Out-of-service tables are left out — the server refuses
+                      them anyway, so offering one would only be a dead end. */}
+                  {tables
+                    .filter((t) => t.status !== "MAINTENANCE")
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        Table {t.number}{t.status === "OCCUPIED" ? " · in use" : ""}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
+
             <button
               onClick={confirmOrder}
               disabled={cartLines.length === 0 || addingToTab}

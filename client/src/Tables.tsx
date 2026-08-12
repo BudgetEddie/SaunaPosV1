@@ -31,6 +31,7 @@
 import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
+import { useOverride } from "./OverrideProvider.tsx";
 import { type Table } from "./types.ts";
 
 const socket = io("http://localhost:4000");
@@ -89,6 +90,16 @@ function Tables() {
   const [note, setNote] = useState("");        // the optional "why" box
   const [busy, setBusy] = useState(false);     // stops double-taps mid-request
 
+  // Changing how many tables there are. Admin work, so it's behind the manager
+  // password for anyone who isn't one — the server is what actually refuses.
+  const askOverride = useOverride();
+  const [editingCount, setEditingCount] = useState(false);
+  // Editing the seat count of the ONE selected table. Null when closed; a
+  // string while typing, so a half-typed number isn't forced into one.
+  const [editingSeats, setEditingSeats] = useState<string | null>(null);
+  const [wantTotal, setWantTotal] = useState("");
+  const [newSeats, setNewSeats] = useState("");
+
   // Bumped once a minute so the "occupied 2h 05m" labels stay honest. This one
   // earns its keep more than most — the durations are the whole early-warning
   // system for a table nobody cleared.
@@ -142,6 +153,71 @@ function Tables() {
     setNote("");
     loadTables();
   };
+
+  // Set how many tables the lounge has. Growing adds them on the end; shrinking
+  // takes the highest-numbered away. The server works out which and refuses if
+  // any of them has people at it — this only says what number to aim for.
+  const saveCount = async () => {
+    const total = parseInt(wantTotal, 10);
+    if (!Number.isInteger(total) || busy) return;
+    // An admin gets "" back and is never prompted; staff get the password box.
+    const token = await askOverride(`Change the lounge to ${total} tables`);
+    if (token === null) return;
+    setBusy(true);
+    const res = await authFetch(`/tables/count`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ total, seats: newSeats === "" ? null : parseInt(newSeats, 10) }),
+    }, token);
+    setBusy(false);
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+      return;
+    }
+    setEditingCount(false);
+    setWantTotal("");
+    setNewSeats("");
+    loadTables();
+  };
+
+  // Change how many one table seats. Separate from the total above: that one
+  // gives every NEW table the same number, this fixes an individual one.
+  const saveSeats = async () => {
+    if (!selected || editingSeats === null || busy) return;
+    const token = await askOverride(`Set ${selected.number} to ${editingSeats === "" ? "no" : editingSeats} seats`);
+    if (token === null) return;
+    setBusy(true);
+    const res = await authFetch(`/tables/${selected.id}/seats`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seats: editingSeats === "" ? null : parseInt(editingSeats, 10) }),
+    }, token);
+    setBusy(false);
+    if (!res.ok) {
+      const { error } = await res.json();
+      alert(error);
+      return;
+    }
+    setEditingSeats(null);
+    loadTables();
+  };
+
+  // What pressing save would actually do, worked out here so it can be shown
+  // BEFORE committing. Removing tables can't be undone, so the consequence
+  // belongs on screen rather than in the result.
+  const wanted = parseInt(wantTotal, 10);
+  const countPreview = (() => {
+    if (!Number.isInteger(wanted) || wanted < 0) return null;
+    const diff = wanted - tables.length;
+    if (diff === 0) return "No change — that's how many there are now.";
+    if (diff > 0) return `Adds ${diff} table${diff === 1 ? "" : "s"} on the end.`;
+    // Name them: "removes T15, T16" is far clearer than "removes 2 tables".
+    const doomed = [...tables]
+      .sort((a, b) => (parseInt(a.number.match(/(\d+)\s*$/)?.[1] ?? "-1", 10)) - (parseInt(b.number.match(/(\d+)\s*$/)?.[1] ?? "-1", 10)))
+      .slice(wanted);
+    return `Removes ${doomed.map((t) => t.number).join(", ")}. This can't be undone.`;
+  })();
 
   const now = new Date();
 
@@ -197,6 +273,54 @@ function Tables() {
               hours. Worth checking whether anyone's actually sitting there.
             </div>
           )}
+
+          {/* Change how many tables exist. Sits with the count it changes,
+              rather than on a settings screen nobody would think to open. */}
+          <div style={{ marginLeft: stale > 0 ? 0 : "auto" }}>
+            {!editingCount ? (
+              <button
+                onClick={() => { setEditingCount(true); setWantTotal(String(tables.length)); }}
+                style={{ padding: "9px 15px", border: "1.5px solid #d8cebc", borderRadius: 11, background: "#fffdf9", color: "#5f5340", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+              >
+                Change how many
+              </button>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <label style={{ ...MICRO, marginRight: 2 }}>Tables</label>
+                  <input
+                    className="cd-in" autoFocus type="number" min={0} max={200}
+                    value={wantTotal} onChange={(e) => setWantTotal(e.target.value)}
+                    style={{ width: 78 }}
+                  />
+                  <label style={{ ...MICRO, marginLeft: 6 }}>Seats (new)</label>
+                  <input
+                    className="cd-in" type="number" min={0} max={99} placeholder="—"
+                    value={newSeats} onChange={(e) => setNewSeats(e.target.value)}
+                    style={{ width: 70 }}
+                  />
+                  <button
+                    onClick={saveCount}
+                    disabled={busy || countPreview === null}
+                    style={{ padding: "9px 15px", border: "none", borderRadius: 11, background: "#7a6a53", color: "#fffdf9", fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, cursor: busy ? "default" : "pointer", opacity: busy ? .6 : 1 }}
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => { setEditingCount(false); setWantTotal(""); setNewSeats(""); }}
+                    style={{ padding: "9px 13px", border: "1.5px solid #d8cebc", borderRadius: 11, background: "#fffdf9", color: "#7a6a53", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+                {countPreview && (
+                  <div style={{ fontSize: 12, fontWeight: 700, maxWidth: 360, textAlign: "right", lineHeight: 1.4, color: wanted < tables.length ? "#8f3f28" : "#6b6152" }}>
+                    {countPreview}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 330px", gap: 16, alignItems: "start" }}>
@@ -220,7 +344,11 @@ function Tables() {
                   return (
                     <div
                       key={t.id}
-                      onClick={() => { setSelectedId(t.id); setNote(""); }}
+                      // setEditingSeats(null) matters: without it, selecting a
+                      // different table would leave the previous one's number
+                      // sitting in an open box, ready to be saved to the wrong
+                      // table.
+                      onClick={() => { setSelectedId(t.id); setNote(""); setEditingSeats(null); }}
                       title={t.status === "MAINTENANCE" && t.maintenanceNote ? t.maintenanceNote : look.label}
                       style={{
                         minHeight: 64, borderRadius: 10, cursor: "pointer",
@@ -264,9 +392,41 @@ function Tables() {
                       {LOOK[selected.status as Status].label}
                     </span>
                   </div>
-                  {selected.seats != null && (
-                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "#a89a86", marginTop: 5 }}>
-                      Seats {selected.seats}
+                  {/* Seats, editable in place. Setting the lounge total gives
+                      every new table the same number, which is no use once the
+                      room has a two-seater next to a six-seater — so each one
+                      can be corrected here. Blank means "don't show a count". */}
+                  {editingSeats === null ? (
+                    <div
+                      onClick={() => setEditingSeats(selected.seats == null ? "" : String(selected.seats))}
+                      title="Change how many this table seats"
+                      style={{ fontSize: 12.5, fontWeight: 600, color: "#a89a86", marginTop: 5, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
+                    >
+                      {selected.seats != null ? `Seats ${selected.seats}` : "No seat count"}
+                      <span style={{ fontSize: 11, fontWeight: 800, color: "#7a6a53" }}>Edit</span>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 6 }}>
+                      <input
+                        className="cd-in" autoFocus type="number" min={0} max={99} placeholder="—"
+                        value={editingSeats}
+                        onChange={(e) => setEditingSeats(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") saveSeats(); if (e.key === "Escape") setEditingSeats(null); }}
+                        style={{ width: 74 }}
+                      />
+                      <button
+                        onClick={saveSeats}
+                        disabled={busy}
+                        style={{ padding: "9px 14px", border: "none", borderRadius: 10, background: "#7a6a53", color: "#fffdf9", fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, cursor: busy ? "default" : "pointer", opacity: busy ? .6 : 1 }}
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditingSeats(null)}
+                        style={{ padding: "9px 12px", border: "1.5px solid #d8cebc", borderRadius: 10, background: "#fffdf9", color: "#7a6a53", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        Cancel
+                      </button>
                     </div>
                   )}
                 </div>
