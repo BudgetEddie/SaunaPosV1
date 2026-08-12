@@ -34,6 +34,7 @@ import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { SponsorPicker } from "./SponsorPicker.tsx";
 import Checkout from "./Checkout.tsx";
 import { type Category, type Locker, type MenuItem, type Visit } from "./types.ts";
 
@@ -92,7 +93,7 @@ const BTN_GHOST: React.CSSProperties = {
 // ---------------------------------------------------------------------------
 
 // The left half — the category chips and the grid of tiles.
-function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmission, onPick }: {
+function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmission, onPick, onSponsor }: {
   categories: Category[];
   activeCategoryId: number | null;
   onCategory: (id: number | null) => void;
@@ -101,6 +102,9 @@ function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmi
   // Always null on a takeout order — there's no admission to have applied.
   currentAdmission: { description: string } | null;
   onPick: (item: MenuItem, category: Category) => void;
+  // "Pay for this entry from someone else's pass." Absent on the takeout
+  // board, where there's no guest and no pass to spend.
+  onSponsor?: (item: MenuItem) => void;
 }) {
   // Show every category, or just the one whose filter chip is selected.
   const shownCategories = activeCategoryId === null
@@ -196,6 +200,25 @@ function MenuBoard({ categories, activeCategoryId, onCategory, cart, currentAdmi
               <div style={{ fontSize: 13, color: "#a89a86", fontWeight: 600 }}>Nothing in this category yet.</div>
             )}
           </div>
+
+          {/* SPONSORED PASS. Sits under the admission tiles rather than being
+              one of them, because it isn't a different kind of entry — it's the
+              same pass admission, paid out of a different person's balance.
+              Making it a tile would have meant a second menu item that behaved
+              identically, and staff having to know which was which.
+              Only shown where a pass admission actually exists to sponsor. */}
+          {category.isAdmission && onSponsor && (() => {
+            const passItem = category.items.find((i) => i.available && i.redeemsPass && i.visitCredits === 0);
+            if (!passItem) return null;
+            return (
+              <div
+                onClick={() => onSponsor(passItem)}
+                style={{ marginTop: 10, padding: "10px 13px", border: "1.5px dashed #d8cebc", borderRadius: 11, cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: "#7a6a53", textAlign: "center" }}
+              >
+                Sponsored pass — use someone else's balance…
+              </div>
+            );
+          })()}
         </div>
       ))}
     </div>
@@ -425,6 +448,11 @@ function PointOfSale() {
   // Summons the manager-password box. Only discounts need it on this screen —
   // an admin gets "" straight back and is never prompted.
   const askOverride = useOverride();
+
+  // Which pass-admission item the sponsor picker is open for. Null when it's
+  // closed; holding the item means the pick can go straight to set-admission
+  // without looking it up again.
+  const [sponsorFor, setSponsorFor] = useState<MenuItem | null>(null);
 
   const [view, setView] = useState<"cards" | "list">(
     () => (localStorage.getItem("posView") === "list" ? "list" : "cards")
@@ -1142,6 +1170,9 @@ function PointOfSale() {
             cart={cart}
             currentAdmission={currentAdmission}
             onPick={pickItem}
+            // Only the guest till gets this — the takeout board above passes
+            // no onSponsor, because a takeout order has no guest and no pass.
+            onSponsor={(item) => setSponsorFor(item)}
           />
 
           {/* cart */}
@@ -1203,6 +1234,25 @@ function PointOfSale() {
     <div style={{ background: "#f4efe7", minHeight: "100vh" }}>
       {header}
       {takeoutOpen ? takeoutView : selected ? orderView : listView}
+
+      {/* Picking a sponsor swaps the entry charge to the pass admission and
+          records whose balance it comes from. Nothing is deducted here — that
+          waits for check-out, same as every other pass. */}
+      {sponsorFor && selected && (
+        <SponsorPicker
+          onCancel={() => setSponsorFor(null)}
+          onPick={async (c) => {
+            const item = sponsorFor;
+            setSponsorFor(null);
+            await showError(await authFetch(`/visits/${selected.id}/set-admission`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ menuItemId: item.id, passSponsorId: c.id }),
+            }));
+            loadVisits();
+          }}
+        />
+      )}
     </div>
   );
 }

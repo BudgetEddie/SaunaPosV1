@@ -123,6 +123,10 @@ export type Visit = {
   bill: Bill;
   orders: Order[];
   redeemsPass: boolean;
+  // Set only when SOMEONE ELSE's pass is paying for this entry — a member
+  // bringing a friend. Null means the guest used their own, or none at all.
+  // The balance isn't touched until check-out either way.
+  passUsedCustomer: { id: number; firstName: string; lastName: string } | null;
 };
 // A dining table. Nothing points at it and it points at nothing — it exists
 // only to say whether there's somewhere to sit.

@@ -33,6 +33,10 @@ import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch, type LoggedInUser } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { SponsorPicker } from "./SponsorPicker.tsx";
+// This screen has its own richer customer shapes below; `Customer` is only
+// borrowed for whoever the sponsor picker hands back.
+import { type Customer } from "./types.ts";
 
 // The live line to the server — opened once when the app starts, shared by
 // both of the effects further down.
@@ -203,6 +207,10 @@ function CustomerDirectory() {
   const [adding, setAdding] = useState(false);         // is the new-customer form open
   const [newCustomer, setNewCustomer] = useState<Draft>(BLANK);
   const [lockerId, setLockerId] = useState("");        // the chosen locker for check-in
+  // Who's paying for this entry with their pass, if it isn't the guest. Null
+  // means the ordinary behaviour: the guest's own pass, or a paid admission.
+  const [sponsor, setSponsor] = useState<Customer | null>(null);
+  const [pickingSponsor, setPickingSponsor] = useState(false);
 
   // Lets this screen send the browser to another address — used to hand off
   // to the till after check-in.
@@ -362,10 +370,17 @@ function CustomerDirectory() {
     const ok = await showError(await authFetch(`/check-in`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ customerId: selected.id, lockerId: Number(lockerId) }),
+      body: JSON.stringify({
+        customerId: selected.id,
+        lockerId: Number(lockerId),
+        // Only sent when a sponsor was chosen. Its presence is the whole
+        // difference between an ordinary pass entry and a sponsored one.
+        passSponsorId: sponsor ? sponsor.id : undefined,
+      }),
     }));
     if (!ok) return;
     setLockerId("");
+    setSponsor(null);
     loadSelected(selected.id);
     loadCustomers();
     loadLockers();
@@ -787,6 +802,22 @@ function CustomerDirectory() {
                 <option key={l.id} value={l.id}>{l.number}</option>
               ))}
             </select>
+            {/* Someone else's pass. Without this the app quietly uses the
+                guest's own if they have one, which is right almost always —
+                this is the exception for a member bringing a friend. */}
+            {sponsor ? (
+              <button
+                onClick={() => setSponsor(null)}
+                title="Stop using their pass"
+                style={{ ...BTN_GHOST, flex: "none", maxWidth: 260, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", borderColor: "#7a6a53", color: "#7a6a53" }}
+              >
+                Pass from {sponsor.firstName} {sponsor.lastName} ✕
+              </button>
+            ) : (
+              <button onClick={() => setPickingSponsor(true)} style={{ ...BTN_GHOST, flex: "none" }}>
+                Sponsored pass…
+              </button>
+            )}
             <button
               onClick={checkIn}
               style={{ ...BTN_PRIMARY, flex: 1, padding: 16, fontSize: 15, borderRadius: 14, boxShadow: "0 10px 22px -12px rgba(122,106,83,.85)" }}
@@ -805,6 +836,17 @@ function CustomerDirectory() {
     <div style={{ background: "#f4efe7", minHeight: "100vh" }}>
       {header}
       {selectedId === null ? listView : detailView}
+      {/* Floats above whichever view is showing. Choosing only records who
+          will pay — nothing is taken until the guest checks out. */}
+      {pickingSponsor && (
+        <SponsorPicker
+          onPick={(c) => {
+            setSponsor(c);
+            setPickingSponsor(false);
+          }}
+          onCancel={() => setPickingSponsor(false)}
+        />
+      )}
     </div>
   );
 }

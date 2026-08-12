@@ -231,7 +231,12 @@ model Customer {
   visitPassBalance Int       @default(0)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt // set automatically on every change
-  visits           Visit[]
+  // Stays they made themselves. Named because there are now TWO links between
+  // a customer and a visit and Prisma can't tell them apart by type alone —
+  // the name is metadata only, it doesn't change anything stored.
+  visits           Visit[]   @relation("VisitGuest")
+  // Stays somebody ELSE made, paid for out of this customer's pass balance.
+  sponsoredVisits  Visit[]   @relation("PassSponsor")
 }
 
 // A physical locker in the building. Created once by prisma/seed.ts (120 of
@@ -259,9 +264,19 @@ model Visit {
   // order has nobody signed in and no locker held. Every existing visit still
   // has both — nothing is being taken away, the rule is just being relaxed.
   customerId    Int?
-  customer      Customer? @relation(fields: [customerId], references: [id])
+  customer      Customer? @relation("VisitGuest", fields: [customerId], references: [id])
   lockerId      Int?
   locker        Locker?   @relation(fields: [lockerId], references: [id])
+  // WHOSE PASS PAID FOR THIS. Null means the guest used their own, or didn't
+  // use one at all. Deliberately separate from customerId above: the person
+  // staying and the person paying are different questions, and a member
+  // bringing a friend is exactly when they differ.
+  //
+  // The balance still isn't touched until check-out — this only records whose
+  // it will be. See the sponsor guard in index.ts for why that matters: a
+  // sponsor can otherwise be committed to more guests than they have passes.
+  passUsedCustomerId Int?
+  passUsedCustomer   Customer? @relation("PassSponsor", fields: [passUsedCustomerId], references: [id])
   // The ticket number called out at the counter — 1, 2, 3, starting again each
   // morning. Only takeout has one; a staying guest is found by locker instead.
   takeoutNumber Int?

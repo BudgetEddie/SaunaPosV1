@@ -42,6 +42,9 @@ type BillRow = {
   customer: string;
   locker: string;
   redeemsPass: boolean;
+  // Whose pass paid, when it wasn't the guest's own. Null otherwise. This is
+  // the audit trail if a customer ever queries their balance.
+  passSponsor: string | null;
   refunded: boolean;
 };
 type TopItem = { name: string; qty: number; revenue: number };
@@ -420,7 +423,10 @@ function Reports() {
                 <div style={{ fontSize: 13, fontWeight: 700, color: "#7a6a53" }}>{b.locker}</div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#6b6152" }}>
                   {methodLabel(b.paymentMethod)}
-                  {b.redeemsPass ? " · pass" : ""}
+                  {/* Name the sponsor rather than just saying "pass" — the
+                      whole point is being able to trace a disputed balance
+                      back to a person without opening the receipt. */}
+                  {b.redeemsPass ? (b.passSponsor ? ` · pass from ${b.passSponsor}` : " · pass") : ""}
                 </div>
                 <div style={{ textAlign: "right", fontSize: 14, fontWeight: 800, color: b.refunded ? "#a89a86" : "#2b2620", textDecoration: b.refunded ? "line-through" : "none" }}>
                   {money(b.total)}

@@ -62,6 +62,8 @@ type BillData = {
     takeoutName: string | null;
     customer: { firstName: string; lastName: string } | null;
     locker: { number: string } | null;
+    // Set only when someone else's balance paid for the entry.
+    passUsedCustomer: { firstName: string; lastName: string } | null;
   };
 };
 
@@ -183,7 +185,14 @@ function Receipt() {
             </div>
           )}
           {bill.visit.redeemsPass && (
-            <div style={{ textAlign: "center", fontSize: 11 }}>1 visit pass redeemed</div>
+            <div style={{ textAlign: "center", fontSize: 11 }}>
+              {/* Say WHOSE pass when it wasn't the guest's own. A guest
+                  querying their balance later needs the receipt to show
+                  the entry was never charged to them. */}
+              {bill.visit.passUsedCustomer
+                ? `1 visit pass redeemed — sponsored by ${bill.visit.passUsedCustomer.firstName} ${bill.visit.passUsedCustomer.lastName}`
+                : "1 visit pass redeemed"}
+            </div>
           )}
         </>
       ) : (

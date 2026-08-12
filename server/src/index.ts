@@ -721,6 +721,9 @@ app.get("/visits/active", async (_req, res) => {
     include: {
       customer: true,
       locker: true,
+      // Who's paying for the entry, when it isn't the guest. The till and the
+      // checkout screen both name them, so it has to travel with the visit.
+      passUsedCustomer: true,
       bill: { include: { lineItems: true } },
       orders: { include: { items: true }, orderBy: { createdAt: "desc" } },
     },
@@ -728,6 +731,43 @@ app.get("/visits/active", async (_req, res) => {
   });
   res.json(visits);
 });
+
+// ---------------------------------------------------------------------------
+// CAN THIS SPONSOR TAKE ON ONE MORE GUEST?
+//
+// A sponsored visit spends the SPONSOR's pass, and — like every pass here —
+// not until check-out. So between checking in and leaving, a guest is holding
+// a claim on a pass that hasn't been taken yet.
+//
+// That's why "do they have at least one?" isn't enough. A sponsor with one
+// pass could otherwise be picked for two guests: both check-ins would see a
+// balance of 1, and both would deduct at check-out, leaving them at −1. So the
+// question is really "do they have more passes than guests already relying on
+// them?", which is what this counts.
+//
+// `exceptVisitId` is for re-picking a sponsor on a visit that already has one:
+// without it the visit would be counted against itself and refuse.
+// ---------------------------------------------------------------------------
+async function sponsorRefusal(sponsorId: number, exceptVisitId?: number) {
+  const sponsor = await prisma.customer.findUnique({ where: { id: sponsorId } });
+  if (!sponsor) return "That customer no longer exists";
+
+  const outstanding = await prisma.visit.count({
+    where: {
+      passUsedCustomerId: sponsorId,
+      checkOutAt: null,
+      ...(exceptVisitId ? { id: { not: exceptVisitId } } : {}),
+    },
+  });
+
+  if (sponsor.visitPassBalance > outstanding) return null; // fine, carry on
+
+  const who = `${sponsor.firstName} ${sponsor.lastName}`;
+  return outstanding === 0
+    ? `${who} has no passes left.`
+    : `${who} has ${sponsor.visitPassBalance} pass${sponsor.visitPassBalance === 1 ? "" : "es"} ` +
+      `and ${outstanding} guest${outstanding === 1 ? " is" : "s are"} already checked in on them.`;
+}
 
 // CHECK IN — a guest walks in. Called from client/src/CustomerDirectory.tsx.
 //
@@ -738,9 +778,15 @@ app.get("/visits/active", async (_req, res) => {
 // staring at the same free locker at the same moment, so the client's checks
 // are only a courtesy and these are the ones that count.
 app.post("/check-in", async (req, res) => {
-  const { customerId, lockerId } = req.body;
+  const { customerId, lockerId, passSponsorId } = req.body;
   if (!lockerId) {
     return res.status(400).json({ error: "Pick a locker before checking in" });
+  }
+  // Someone else is paying for this entry out of their pass balance. Checked
+  // before anything is created, so a refusal leaves nothing half-done.
+  if (passSponsorId) {
+    const refusal = await sponsorRefusal(Number(passSponsorId));
+    if (refusal) return res.status(409).json({ error: refusal });
   }
 
   const customer = await prisma.customer.findUnique({ where: { id: customerId } });
@@ -775,7 +821,10 @@ app.post("/check-in", async (req, res) => {
   // Pick the admission to auto-apply: a pass redemption if the customer has
   // passes banked, otherwise the configured default admission.
   // visitCredits: 0 keeps pass PACKS (items that sell credits) out of the search.
-  const passAdmission = customer.visitPassBalance >= 1
+  // A sponsor overrides this. Without the `passSponsorId ||` the guest's own
+  // balance would be checked first and quietly used instead — the sponsor
+  // would be recorded but never charged.
+  const passAdmission = (passSponsorId || customer.visitPassBalance >= 1)
     ? await prisma.menuItem.findFirst({
         where: { redeemsPass: true, visitCredits: 0, category: { isAdmission: true } },
       })
@@ -804,7 +853,15 @@ app.post("/check-in", async (req, res) => {
   // happens at check-out, so a guest mid-visit still sees the pass they're
   // using as unspent.
   const checkedInVisit = passAdmission
-    ? await prisma.visit.update({ where: { id: newVisit.id }, data: { redeemsPass: true } })
+    ? await prisma.visit.update({
+        where: { id: newVisit.id },
+        data: {
+          redeemsPass: true,
+          // Whose balance this will come out of at check-out. Null here means
+          // the guest's own.
+          passUsedCustomerId: passSponsorId ? Number(passSponsorId) : null,
+        },
+      })
     : newVisit;
 
   // Assemble the answer by hand from the pieces created above, rather than
@@ -829,7 +886,7 @@ app.post("/check-in", async (req, res) => {
 // Used when someone arrives on a day rate and upgrades, or vice versa.
 app.post("/visits/:visitId/set-admission", async (req, res) => {
   const visitId = Number(req.params.visitId);
-  const { menuItemId } = req.body;
+  const { menuItemId, passSponsorId } = req.body;
 
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
@@ -864,7 +921,20 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
   if (!item.category.isAdmission) {
     return res.status(400).json({ error: `"${item.name}" is not an admission type` });
   }
-  if (item.redeemsPass && visit.customer.visitPassBalance < 1) {
+  // Whose pass pays. A sponsor is only meaningful on a pass admission — asking
+  // for one alongside a cash entry is a mistake worth saying out loud rather
+  // than silently ignoring.
+  const sponsorId = passSponsorId ? Number(passSponsorId) : null;
+  if (sponsorId && !item.redeemsPass) {
+    return res.status(400).json({ error: `"${item.name}" isn't paid with a pass, so it can't be sponsored` });
+  }
+  if (sponsorId) {
+    // This visit is excluded from the count — otherwise re-picking the same
+    // sponsor for a visit that already has them would refuse itself.
+    const refusal = await sponsorRefusal(sponsorId, visitId);
+    if (refusal) return res.status(409).json({ error: refusal });
+  } else if (item.redeemsPass && visit.customer.visitPassBalance < 1) {
+    // Unsponsored pass admission — the guest's own balance has to cover it.
     return res.status(409).json({
       error: `${visit.customer.firstName} ${visit.customer.lastName} has no visit passes remaining`,
     });
@@ -885,7 +955,16 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
         isAdmission: true,
       },
     }),
-    prisma.visit.update({ where: { id: visitId }, data: { redeemsPass: item.redeemsPass } }),
+    prisma.visit.update({
+      where: { id: visitId },
+      data: {
+        redeemsPass: item.redeemsPass,
+        // Always written, never left alone. Switching a sponsored visit to a
+        // cash admission has to CLEAR the sponsor — otherwise they'd still be
+        // charged at check-out for an entry they're no longer paying for.
+        passUsedCustomerId: item.redeemsPass ? sponsorId : null,
+      },
+    }),
   ]);
 
   io.emit("bill:line-item-added", { billId });
@@ -1337,7 +1416,9 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
     where: { paidAt: paidWindow },
     include: {
       lineItems: true,
-      visit: { include: { customer: true, locker: true } },
+      // passUsedCustomer so the report can name who sponsored an entry — the
+      // audit trail if a customer ever queries their balance.
+      visit: { include: { customer: true, locker: true, passUsedCustomer: true } },
     },
     orderBy: { paidAt: "desc" },
   });
@@ -1377,6 +1458,11 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
         : b.visit.takeoutName || "Takeout",
       locker: b.visit.locker ? b.visit.locker.number : `#${b.visit.takeoutNumber ?? "?"}`,
       redeemsPass: b.visit.redeemsPass,
+      // Null unless someone else's balance paid for this entry. Named rather
+      // than flagged, so a disputed balance can be traced to a person.
+      passSponsor: b.visit.passUsedCustomer
+        ? `${b.visit.passUsedCustomer.firstName} ${b.visit.passUsedCustomer.lastName}`
+        : null,
       refunded: Boolean(b.refundedAt),
     };
   });
@@ -1476,7 +1562,8 @@ app.get("/bills/:id", async (req, res) => {
     where: { id },
     include: {
       lineItems: { orderBy: { createdAt: "asc" } },
-      visit: { include: { customer: true, locker: true } },
+      // passUsedCustomer so the receipt can name who sponsored the entry.
+      visit: { include: { customer: true, locker: true, passUsedCustomer: true } },
     },
   });
   if (!bill) return res.status(404).json({ error: "Bill not found" });
@@ -1582,10 +1669,19 @@ app.post("/check-out", async (req, res) => {
   // This stay was set up to be paid with a pass, but the balance has since hit
   // zero — most likely the pack they bought was voided. Refuse rather than
   // letting them leave without paying anything.
-  if (visit.redeemsPass && visit.customer.visitPassBalance < 1) {
-    return res.status(409).json({
-      error: "This visit is set to use a pass, but the customer has none remaining. Change their admission type.",
-    });
+  // WHOSE pass is being spent. A sponsored visit takes it from whoever was
+  // named at check-in; everything else takes it from the guest.
+  const passPayerId = visit.passUsedCustomerId ?? customerId;
+  if (visit.redeemsPass) {
+    const payer = visit.passUsedCustomerId
+      ? await prisma.customer.findUnique({ where: { id: visit.passUsedCustomerId } })
+      : visit.customer;
+    if (!payer || payer.visitPassBalance < 1) {
+      const who = payer ? `${payer.firstName} ${payer.lastName}` : "the sponsor";
+      return res.status(409).json({
+        error: `This visit is set to use a pass, but ${who} has none remaining. Change their admission type.`,
+      });
+    }
   }
 
   const { updatedVisit, updatedLocker, updatedBill, updatedCustomer } = await prisma.$transaction(async (tx) => {
@@ -1618,9 +1714,14 @@ app.post("/check-out", async (req, res) => {
     // 5. Spend one visit pass, if this visit was checked in on one
     //    THIS is where a pass is finally deducted — not at check-in. Buying
     //    passes credits immediately, but spending one waits until now.
+    //    Sponsored visits take it from the sponsor, not the guest. Exactly one
+    //    per visit — two friends on one sponsor check out separately and take
+    //    one each, never one deduction covering both. `decrement` is applied by
+    //    the database itself, so two simultaneous check-outs can't both read
+    //    the same starting figure.
     const updatedCustomer = visit.redeemsPass
       ? await tx.customer.update({
-          where: { id: customerId },
+          where: { id: passPayerId },
           data: { visitPassBalance: { decrement: 1 } },
         })
       : null;
