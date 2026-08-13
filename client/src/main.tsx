@@ -32,6 +32,12 @@ import Reports from "./Reports.tsx";
 import MenuPage from "./MenuPage.tsx";
 import Receipt from "./Receipt.tsx";
 import { OverrideProvider } from "./OverrideProvider.tsx";
+import { start as startClickSound } from "./clickSound.ts";
+
+// The tap sound. Attached once, at the document level, rather than being wired
+// into each screen — there are hundreds of tappable things and adding a line to
+// every one would be a tax on every future change. See clickSound.ts.
+startClickSound();
 
 // Find the empty <div id="root"> in index.html and hand it to React. From here
 // on, everything on screen is drawn by React into that one box.

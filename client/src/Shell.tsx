@@ -22,6 +22,7 @@ import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import Login from "./Login.tsx";
 import { type LoggedInUser } from "./authFetch.ts";
+import { soundEnabled, setSoundEnabled } from "./clickSound.ts";
 
 function Shell() {
   // Who's signed in, remembered across page reloads in localStorage — the
@@ -34,6 +35,10 @@ function Shell() {
   const [user, setUser] = useState<LoggedInUser | null>(
     JSON.parse(localStorage.getItem("user") ?? "null")
   );
+
+  // The tap sound, remembered per terminal like the till's Cards/List choice.
+  // A quiet room and an eight-hour shift is exactly when someone wants this off.
+  const [sound, setSound] = useState(soundEnabled());
 
   // THE GATE. Nobody signed in means the login page is all that exists — the
   // sidebar and the six screens below are never even built.
@@ -92,6 +97,14 @@ function Shell() {
               Menu and the sign-out button down to the bottom of the sidebar. */}
           <div style={{ flex: 1 }} />
           <NavLink to="/menu" className="side-link">Menu</NavLink>
+          <div
+            onClick={() => { const next = !sound; setSound(next); setSoundEnabled(next); }}
+            title={sound ? "Turn the tap sound off" : "Turn the tap sound on"}
+            style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 18px 0", padding: "7px 0", fontSize: 12, fontWeight: 600, color: sound ? "rgba(244,239,231,.75)" : "rgba(244,239,231,.4)", cursor: "pointer" }}
+          >
+            <span style={{ fontSize: 13 }}>{sound ? "🔊" : "🔇"}</span>
+            {sound ? "Tap sound on" : "Tap sound off"}
+          </div>
           <div style={{ padding: "12px 18px 6px", fontSize: 12, color: "rgba(244,239,231,.55)" }}>
             {user.displayName} · {isAdmin ? "admin" : "staff"}
           </div>
