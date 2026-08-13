@@ -29,6 +29,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { type Category, type Visit } from "./types.ts";
+import { useDialog } from "./DialogProvider.tsx";
 
 // The live line to the server. This screen depends on it more than any other —
 // it's how an order rung up at the front desk appears here seconds later
@@ -129,6 +130,7 @@ function groupOrderItems(items: OrderItemRow[]) {
 }
 
 function Kitchen() {
+  const dialog = useDialog();
   const [orders, setOrders] = useState<KitchenOrder[]>([]);   // the board
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);          // guests, for the composer
@@ -253,7 +255,7 @@ function Kitchen() {
     });
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
     closeComposer();

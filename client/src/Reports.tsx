@@ -27,9 +27,10 @@
 //   POST /bills/:id/refund              → refund a whole bill
 // ============================================================================
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { useDialog } from "./DialogProvider.tsx";
 
 // One closed bill in the day's list.
 type BillRow = {
@@ -201,6 +202,15 @@ function Reports() {
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
   const askOverride = useOverride();
+  const dialog = useDialog();
+
+  // Set while a refund is mid-flight, and this one really matters. The Refund
+  // button only greys out once the refreshed report comes back saying the bill
+  // is refunded, which is the very last thing to happen. Until then the button
+  // is still live — and the boxes that used to hold everything up were the
+  // browser's, which froze the page. Ours don't, so without this a double-tap
+  // would hand the money back twice.
+  const refunding = useRef(false);
 
   // The permission slip for this screen. "" means an admin who needs none, a
   // long string means a manager approved it, and null means still locked.
@@ -282,27 +292,38 @@ function Reports() {
   // all-or-nothing (there's no partial refund), can't be done twice, and only
   // works on a bill that was actually paid.
   const refund = async (bill: BillRow) => {
-    // `prompt` returns null if Cancel was pressed, as opposed to "" for an
-    // empty reason — so this check must be against null specifically.
-    const reason = prompt(`Refund ${money(bill.total)} to ${bill.customer}?\n\nReason:`);
-    if (reason === null) return;
-    // Asked for separately, even on an already-unlocked screen. Looking at
-    // yesterday's takings and handing $80 back are not the same act, so the
-    // screen's PAGE approval deliberately doesn't cover this.
-    const token = await askOverride(`Refund ${money(bill.total)} to ${bill.customer}`);
-    if (token === null) return;
-    const res = await authFetch(`/bills/${bill.id}/refund`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason }),
-    }, token);
-    if (!res.ok) {
-      const { error } = await res.json();
-      alert(error);
-      return;
+    if (refunding.current) return;
+    refunding.current = true;
+    try {
+      // askText hands back null if Cancel was pressed, as opposed to "" for an
+      // empty reason — so this check must be against null specifically. An
+      // unexplained refund is allowed; an abandoned one is not.
+      const reason = await dialog.askText(`Refund ${money(bill.total)} to ${bill.customer}?`, {
+        title: "Refund a bill",
+        placeholder: "Reason (optional)",
+        confirmLabel: "Refund",
+      });
+      if (reason === null) return;
+      // Asked for separately, even on an already-unlocked screen. Looking at
+      // yesterday's takings and handing $80 back are not the same act, so the
+      // screen's PAGE approval deliberately doesn't cover this.
+      const token = await askOverride(`Refund ${money(bill.total)} to ${bill.customer}`);
+      if (token === null) return;
+      const res = await authFetch(`/bills/${bill.id}/refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      }, token);
+      if (!res.ok) {
+        const { error } = await res.json();
+        await dialog.say(error, { title: "That didn't work" });
+        return;
+      }
+      setReceipt(null);
+      load();
+    } finally {
+      refunding.current = false;
     }
-    setReceipt(null);
-    load();
   };
 
   // The cash-vs-card split, for the drawer count at the end of the night.

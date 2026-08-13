@@ -34,6 +34,7 @@ import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { useDialog } from "./DialogProvider.tsx";
 import { SponsorPicker } from "./SponsorPicker.tsx";
 import Checkout from "./Checkout.tsx";
 import { type Category, type Locker, type MenuItem, type Visit } from "./types.ts";
@@ -448,6 +449,7 @@ function PointOfSale() {
   // Summons the manager-password box. Only discounts need it on this screen —
   // an admin gets "" straight back and is never prompted.
   const askOverride = useOverride();
+  const dialog = useDialog();
 
   // Which pass-admission item the sponsor picker is open for. Null when it's
   // closed; holding the item means the pick can go straight to set-admission
@@ -546,7 +548,7 @@ function PointOfSale() {
   const showError = async (res: Response) => {
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
     }
     return res.ok;
   };
@@ -782,7 +784,7 @@ function PointOfSale() {
     setTakeoutPaying(false);
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
     const { visit } = await res.json();
@@ -805,10 +807,10 @@ function PointOfSale() {
 
   // Move on to payment — but refuse while there's an unconfirmed cart, since
   // walking into checkout would silently discard it and undercharge the guest.
-  const goToCheckout = () => {
+  const goToCheckout = async () => {
     if (!selected) return;
     if (cartLines.length > 0) {
-      alert("There's an unconfirmed order on screen — add it to the tab or clear it first.");
+      await dialog.say("There's an unconfirmed order on screen — add it to the tab or clear it first.");
       return;
     }
     setCheckoutVisit(selected);

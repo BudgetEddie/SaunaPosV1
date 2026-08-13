@@ -33,6 +33,7 @@ import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch, type LoggedInUser } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { useDialog } from "./DialogProvider.tsx";
 import { SponsorPicker } from "./SponsorPicker.tsx";
 // This screen has its own richer customer shapes below; `Customer` is only
 // borrowed for whoever the sponsor picker hands back.
@@ -222,6 +223,7 @@ function CustomerDirectory() {
   const user: LoggedInUser | null = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
   const askOverride = useOverride();
+  const dialog = useDialog();
 
   const loadCustomers = () => authFetch(`/customers`).then((r) => r.json()).then(setCustomers);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
@@ -286,7 +288,7 @@ function CustomerDirectory() {
   const showError = async (res: Response) => {
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
     }
     return res.ok;
   };
@@ -364,7 +366,7 @@ function CustomerDirectory() {
   const checkIn = async () => {
     if (!selected) return;
     if (!lockerId) {
-      alert("Pick a locker first");
+      await dialog.say("Pick a locker first");
       return;
     }
     const ok = await showError(await authFetch(`/check-in`, {

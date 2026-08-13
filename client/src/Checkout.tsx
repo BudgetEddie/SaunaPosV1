@@ -31,6 +31,7 @@
 import { useEffect, useRef, useState } from "react";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { useDialog } from "./DialogProvider.tsx";
 import { type BillLineItem, type Visit } from "./types.ts";
 
 type RosterEntry = { username: string; displayName: string; role: string };
@@ -165,6 +166,13 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   // a manager's approval.
   const isAdmin = user?.role === "ADMIN";
   const askOverride = useOverride();
+  const dialog = useDialog();
+
+  // Set while a void is mid-flight. The "are you sure?" box is drawn by the app
+  // now rather than by the browser; the browser's version froze everything
+  // until answered, which quietly meant a second tap couldn't land. It can now,
+  // and two taps on one row would void the same charge twice.
+  const voidingOne = useRef(false);
 
   useEffect(() => {
     authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
@@ -202,13 +210,53 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
     toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   };
 
+  // What the guest would save by paying cash — or null if they'd save nothing,
+  // which is the usual answer.
+  //
+  // The number comes from the server, and that's deliberate. It's the same
+  // function that writes the real charge at check-out, so what the staff member
+  // reads out and what lands on the bill cannot drift apart. Working it out
+  // here from a copy of the rules is how this project once shipped a screen
+  // full of charges at 0% tax.
+  //
+  // Nothing is written yet. Tapping Cash is not paying, so the discount stays a
+  // preview until the money is actually taken.
+  const [cashDiscount, setCashDiscount] = useState<{ description: string; amount: number; taxRate: number } | null>(null);
+
+  // Re-asked whenever the charges change, not just once. The bill moves under
+  // this screen all the time: the kitchen adds a drink, another terminal swaps
+  // the entry charge for a pass — and a swap to a pass takes the discount away.
+  const lineItemsKey = visit.bill.lineItems.map((i) => `${i.id}:${i.amount}`).join(",");
+  useEffect(() => {
+    let abandoned = false;
+    authFetch(`/visits/${visit.id}/cash-discount`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!abandoned) setCashDiscount(d); })
+      // A failed lookup shows no discount rather than a guessed one. The server
+      // still applies the real thing at checkout either way.
+      .catch(() => { if (!abandoned) setCashDiscount(null); });
+    // Stops a slow reply from an old bill overwriting a newer one.
+    return () => { abandoned = true; };
+  }, [visit.id, lineItemsKey]);
+
+  // Only cash earns it. Switching to Card puts the full price straight back,
+  // with no round trip, because the figure was already fetched.
+  const discount = method === "CASH" ? cashDiscount : null;
+
   // The figures being charged. This is the authoritative version: tax is added
   // up per charge using each one's own frozen rate, so a 0% massage and a 13%
   // sandwich on the same tab are both handled correctly. (The guest cards on
   // the previous screen use a rougher single-rate estimate.)
+  //
+  // The discount joins in as though it were already a charge — a negative one
+  // carrying the entry charge's own tax rate — which is exactly what it becomes
+  // a moment later. That's what keeps this total and the printed receipt equal.
   const rows = groupBill(visit.bill.lineItems);
-  const subtotal = visit.bill.lineItems.reduce((sum, i) => sum + i.amount, 0);
-  const tax = visit.bill.lineItems.reduce((sum, i) => sum + i.amount * i.taxRate, 0);
+  const subtotal =
+    visit.bill.lineItems.reduce((sum, i) => sum + i.amount, 0) + (discount?.amount ?? 0);
+  const tax =
+    visit.bill.lineItems.reduce((sum, i) => sum + i.amount * i.taxRate, 0) +
+    (discount ? discount.amount * discount.taxRate : 0);
   const total = subtotal + tax;
 
   // A charge counts as a kitchen item if the kitchen was ever sent something
@@ -224,21 +272,31 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   // The server refuses in several cases: an already-paid bill, the entry
   // charge, or a pass pack whose passes have already been used.
   const voidOne = async (row: BillRow) => {
+    if (voidingOne.current) return;
     const id = row.ids[row.ids.length - 1]; // the most recently rung-up one
-    if (!confirm(`Void one "${row.description}" (${money(row.unit)}) from this bill?`)) return;
-    // An admin gets "" straight back and is never prompted. Staff get the
-    // manager's password box; null means it was cancelled.
-    // The label shown here is also what lands in the approval log, so it's
-    // specific on purpose — "Void" tells you nothing three weeks later.
-    const token = await askOverride(`Void "${row.description}" (${money(row.unit)})`);
-    if (token === null) return;
-    const res = await authFetch(`/bills/${visit.bill.id}/line-items/${id}`, { method: "DELETE" }, token);
-    if (!res.ok) {
-      const { error } = await res.json();
-      alert(error);
-    } else if (token) {
-      // Only staff see this — an admin's token is "" and needed no approval.
-      showToast(`Approved · voided ${row.description}`);
+    voidingOne.current = true;
+    try {
+      const yes = await dialog.confirm(
+        `Void one "${row.description}" (${money(row.unit)}) from this bill?`,
+        { title: "Void a charge", confirmLabel: "Void one", danger: true }
+      );
+      if (!yes) return;
+      // An admin gets "" straight back and is never prompted. Staff get the
+      // manager's password box; null means it was cancelled.
+      // The label shown here is also what lands in the approval log, so it's
+      // specific on purpose — "Void" tells you nothing three weeks later.
+      const token = await askOverride(`Void "${row.description}" (${money(row.unit)})`);
+      if (token === null) return;
+      const res = await authFetch(`/bills/${visit.bill.id}/line-items/${id}`, { method: "DELETE" }, token);
+      if (!res.ok) {
+        const { error } = await res.json();
+        await dialog.say(error, { title: "That didn't work" });
+      } else if (token) {
+        // Only staff see this — an admin's token is "" and needed no approval.
+        showToast(`Approved · voided ${row.description}`);
+      }
+    } finally {
+      voidingOne.current = false;
     }
   };
 
@@ -258,13 +316,24 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
     setBusy(false);
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
+    // What was ACTUALLY charged, straight from the till, rather than the total
+    // this screen worked out a moment ago. They agree in every ordinary case —
+    // but the cash discount is added server-side during this very request, so
+    // the bill coming back is the only thing that can be trusted to match the
+    // receipt. Falls back to the screen's own figure if an older server sends
+    // nothing back.
+    const paidBill = await res.json().catch(() => null);
+    const charged: { amount: number; taxRate: number }[] | null = paidBill?.bill?.lineItems ?? null;
+    const chargedTotal = charged
+      ? charged.reduce((sum, i) => sum + i.amount + i.amount * i.taxRate, 0)
+      : total;
     // Paid. Freeze a copy of everything the confirmation screen needs, because
     // this guest is about to vanish from the live list of active visits.
     setPaid({
-      total,
+      total: chargedTotal,
       method: METHODS.find((m) => m.id === method)?.label ?? method,
       name: `${visit.customer.firstName} ${visit.customer.lastName}`,
       locker: visit.locker.number,
@@ -445,7 +514,33 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
               </div>
             ))}
 
-            {rows.length === 0 && (
+            {/* The cash discount, sitting with the charges because that's where
+                staff read the bill from — but greyed and labelled, because
+                unlike everything above it this hasn't happened yet. It's added
+                for real the moment Complete Checkout is pressed, and it
+                disappears if they switch to Card. */}
+            {discount && (
+              <div
+                style={{ display: "grid", gridTemplateColumns: ROW, gap: 12, alignItems: "center", padding: "14px 22px", borderBottom: "1px solid rgba(43,38,32,.05)", background: "#faf7f0" }}
+              >
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 15, fontWeight: 700, color: "#3f5540" }}>{discount.description}</span>
+                    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, textTransform: "uppercase", color: "#3f5540", background: "#dfeada", padding: "2px 7px", borderRadius: 20 }}>
+                      Paying cash
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600, marginTop: 2 }}>
+                    Off the entry charge · applied when this is paid
+                  </div>
+                </div>
+                <div style={{ textAlign: "center", fontSize: 15, fontWeight: 700, color: "#6b6152" }}>1</div>
+                <div style={{ textAlign: "right", fontSize: 15, fontWeight: 700, color: "#3f5540" }}>{money(discount.amount)}</div>
+                <div />
+              </div>
+            )}
+
+            {rows.length === 0 && !discount && (
               <div style={{ padding: 30, textAlign: "center", fontSize: 14, fontWeight: 600, color: "#a89a86" }}>
                 Nothing on this bill yet.
               </div>

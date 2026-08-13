@@ -27,10 +27,11 @@
 //   PUT    /settings                   → save the default tax rate
 // ============================================================================
 
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { useDialog } from "./DialogProvider.tsx";
 import { type Category, type MenuItem } from "./types.ts";
 
 const socket = io("http://localhost:4000");
@@ -123,6 +124,10 @@ function blankDraft(categoryId: number, defaultTaxPercent: string): Draft {
 function MenuPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [defaultTaxPercent, setDefaultTaxPercent] = useState("13.00");
+  // The cash discount, both in dollars. Kept as text while being typed — the
+  // boxes have to tolerate a half-finished "1" on the way to "15".
+  const [cashDiscount, setCashDiscount] = useState("0.00");
+  const [cashDiscountMinEntry, setCashDiscountMinEntry] = useState("0.00");
   const [loadedSettings, setLoadedSettings] = useState(false);
   const [query, setQuery] = useState("");                       // item search
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
@@ -133,6 +138,13 @@ function MenuPage() {
   const user = JSON.parse(localStorage.getItem("user") ?? "null");
   const isAdmin = user?.role === "ADMIN";
   const askOverride = useOverride();
+  const dialog = useDialog();
+
+  // Set while a delete or a rename is mid-flight. The message boxes are drawn
+  // by the app now rather than by the browser, and the browser's ones used to
+  // freeze everything until answered — which quietly meant a second click
+  // couldn't land. It can now, so this says no to it.
+  const acting = useRef(false);
 
   // Like Reports, this is a screen you enter to do admin work, so it unlocks
   // once rather than prompting on every save. "" for an admin who needs no
@@ -159,6 +171,8 @@ function MenuPage() {
       // refetch would wipe out a rate being typed but not yet saved.
       if (!loadedSettings) {
         setDefaultTaxPercent((s.taxRate * 100).toFixed(2));
+        setCashDiscount(s.cashDiscount.toFixed(2));
+        setCashDiscountMinEntry(s.cashDiscountMinEntry.toFixed(2));
         setLoadedSettings(true);
       }
     });
@@ -200,7 +214,7 @@ function MenuPage() {
         setExpired(true);
         return false;
       }
-      alert(body.error);
+      await dialog.say(body.error, { title: "That didn't work" });
     }
     return res.ok;
   };
@@ -224,10 +238,10 @@ function MenuPage() {
     });
   };
 
-  const newItem = (categoryId?: number) => {
+  const newItem = async (categoryId?: number) => {
     const target = categoryId ?? categories[0]?.id;
     if (!target) {
-      alert("Add a category first.");
+      await dialog.say("Add a category first.");
       return;
     }
     setCatFormGroup(null);
@@ -280,12 +294,12 @@ function MenuPage() {
   const saveItem = async () => {
     if (!draft) return;
     if (!draft.name.trim()) {
-      alert("Give the item a name.");
+      await dialog.say("Give the item a name.");
       return;
     }
     const price = parseFloat(draft.price);
     if (Number.isNaN(price)) {
-      alert("Give the item a price.");
+      await dialog.say("Give the item a price.");
       return;
     }
     // Turn the typed text back into the shapes the database wants — notably
@@ -326,11 +340,22 @@ function MenuPage() {
   // charge stores the name and price as text at the moment of sale rather than
   // pointing back at the menu, so old receipts keep working forever.
   const deleteItem = async () => {
-    if (!draft?.id) return;
-    if (!confirm("Delete this item? Bills already rung up are unaffected.")) return;
-    await showError(await authFetch(`/menu-items/${draft.id}`, { method: "DELETE" }, approval));
-    setDraft(null);
-    loadMenu();
+    if (!draft?.id || acting.current) return;
+    const id = draft.id;
+    acting.current = true;
+    try {
+      const yes = await dialog.confirm("Delete this item? Bills already rung up are unaffected.", {
+        title: "Delete item",
+        confirmLabel: "Delete",
+        danger: true,
+      });
+      if (!yes) return;
+      await showError(await authFetch(`/menu-items/${id}`, { method: "DELETE" }, approval));
+      setDraft(null);
+      loadMenu();
+    } finally {
+      acting.current = false;
+    }
   };
 
   // The "86 it" switch — hide something that's run out without deleting it.
@@ -374,9 +399,20 @@ function MenuPage() {
   // Remove a category. The server refuses if it still has items in it, so
   // there's no way to accidentally orphan half the menu.
   const deleteCategory = async (category: Category) => {
-    if (!confirm(`Remove the category "${category.name}"?`)) return;
-    await showError(await authFetch(`/categories/${category.id}`, { method: "DELETE" }, approval));
-    loadMenu();
+    if (acting.current) return;
+    acting.current = true;
+    try {
+      const yes = await dialog.confirm(`Remove the category "${category.name}"?`, {
+        title: "Remove category",
+        confirmLabel: "Remove",
+        danger: true,
+      });
+      if (!yes) return;
+      await showError(await authFetch(`/categories/${category.id}`, { method: "DELETE" }, approval));
+      loadMenu();
+    } finally {
+      acting.current = false;
+    }
   };
 
   // The house tax rate. Note what this does NOT do: it doesn't change anything
@@ -390,7 +426,33 @@ function MenuPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ taxRate: rate }),
     }, approval));
-    if (ok) alert("Saved. New items will start at this rate.");
+    if (ok) await dialog.say("Saved. New items will start at this rate.", { title: "Default tax" });
+  };
+
+  // The cash discount. Unlike the tax rate above, this one DOES change what
+  // guests pay from now on — it's read fresh at every checkout, so a change
+  // here affects everyone still in the building.
+  //
+  // The server does the real checking, including the rule that the minimum
+  // entry has to be larger than the discount. Whatever it refuses comes back as
+  // a message through showError, so there's no second copy of that rule here.
+  const saveCashDiscount = async () => {
+    const amount = parseFloat(cashDiscount) || 0;
+    const minEntry = parseFloat(cashDiscountMinEntry) || 0;
+    const ok = await showError(await authFetch(`/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cashDiscount: amount, cashDiscountMinEntry: minEntry }),
+    }, approval));
+    if (!ok) return;
+    setCashDiscount(amount.toFixed(2));
+    setCashDiscountMinEntry(minEntry.toFixed(2));
+    await dialog.say(
+      amount > 0
+        ? `Guests paying cash will get $${amount.toFixed(2)} off their entry, as long as their entry charge is $${minEntry.toFixed(2)} or more.`
+        : "The cash discount is switched off. Nobody gets money off for paying cash.",
+      { title: "Cash discount" }
+    );
   };
 
   const q = query.trim().toLowerCase();
@@ -427,7 +489,10 @@ function MenuPage() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          {/* nowrap so a narrow window moves each control to its own line
+              whole, rather than snapping the label off from its box. The outer
+              row still wraps — it's only the insides that must stay together. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 7, flex: "none", whiteSpace: "nowrap" }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: "#a89a86" }}>Default tax</span>
             <input
               className="mn-in"
@@ -437,6 +502,27 @@ function MenuPage() {
             />
             <span style={{ fontSize: 12, fontWeight: 700, color: "#a89a86" }}>%</span>
             <button onClick={saveDefaultTax} style={CHIP_BTN}>Save</button>
+          </div>
+          {/* The cash discount. Two numbers rather than one, because "$5 off"
+              on its own would also take $5 off a $3 child admission. The
+              minimum is what stops that, and the server refuses to save a
+              minimum that isn't bigger than the discount. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 7, flex: "none", whiteSpace: "nowrap" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#a89a86" }}>Cash discount $</span>
+            <input
+              className="mn-in"
+              value={cashDiscount}
+              onChange={(e) => setCashDiscount(e.target.value)}
+              style={{ width: 62, padding: "7px 10px" }}
+            />
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#a89a86" }}>off entry over $</span>
+            <input
+              className="mn-in"
+              value={cashDiscountMinEntry}
+              onChange={(e) => setCashDiscountMinEntry(e.target.value)}
+              style={{ width: 62, padding: "7px 10px" }}
+            />
+            <button onClick={saveCashDiscount} style={CHIP_BTN}>Save</button>
           </div>
           <button
             onClick={() => newItem()}
@@ -521,9 +607,22 @@ function MenuPage() {
                           <div style={{ fontSize: 11.5, fontWeight: 700, color: "#b8ab97" }}>{range}</div>
                           <button onClick={() => newItem(category.id)} style={CHIP_BTN}>+ Item</button>
                           <button
-                            onClick={() => {
-                              const name = prompt("Category name:", category.name);
-                              if (name && name !== category.name) saveCategory(category, { name });
+                            onClick={async () => {
+                              if (acting.current) return;
+                              acting.current = true;
+                              try {
+                                // null means they cancelled; "" means they
+                                // cleared the box and pressed Save, which is
+                                // not a name a category can have.
+                                const name = await dialog.askText("Category name", {
+                                  title: "Rename category",
+                                  initial: category.name,
+                                });
+                                if (!name?.trim() || name === category.name) return;
+                                await saveCategory(category, { name: name.trim() });
+                              } finally {
+                                acting.current = false;
+                              }
                             }}
                             style={{ ...CHIP_BTN, border: "none", background: "transparent", color: "#a89a86" }}
                           >

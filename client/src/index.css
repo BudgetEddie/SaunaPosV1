@@ -564,3 +564,107 @@ body {
   border: 1.5px solid #7a6a53;
   color: #fffdf9;
 }
+
+/* ---------------------------------------------------------------------------
+   ---- Message boxes ----
+   The "are you sure?", "type a name" and "that didn't work" boxes in
+   DialogProvider.tsx, which replaced the browser's own pop-ups. Deliberately
+   a near-copy of the manager override above: the two are siblings and should
+   be indistinguishable on screen.
+
+   The z-index is the one number here that isn't cosmetic. It sits ABOVE the
+   override prompt (90) because an error box legitimately follows a manager
+   password box — void a charge, approve it, server refuses it. Below that:
+   the Reports receipt overlay (50) and the Kitchen composer (30).
+   --------------------------------------------------------------------------- */
+
+.dlg-back {
+  position: fixed;
+  inset: 0;
+  background: rgba(43, 38, 32, 0.42);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 95;
+  animation: fadeIn 0.12s ease-out;
+}
+
+.dlg-card {
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  background: #fffdf9;
+  border: 1px solid rgba(43, 38, 32, 0.1);
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(43, 38, 32, 0.24);
+  padding: 22px 22px 20px;
+  animation: popIn 0.14s ease-out;
+}
+
+.dlg-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #a89a86;
+}
+
+/* pre-wrap so a message written with line breaks in it still reads as the
+   author intended, the way it did in the browser's box. */
+.dlg-msg {
+  margin: 7px 0 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #2b2620;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.dlg-in {
+  width: 100%;
+  margin-top: 14px;
+  border: 1.5px solid #d8cebc;
+  outline: none;
+  background: #fffdf9;
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2b2620;
+  box-sizing: border-box;
+}
+.dlg-in:focus {
+  border-color: #7a6a53;
+}
+.dlg-in::placeholder {
+  color: #b8ab97;
+  font-weight: 600;
+}
+
+.dlg-btn {
+  flex: 1;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.dlg-ghost {
+  background: #fffdf9;
+  border: 1.5px solid #d8cebc;
+  color: #7a6a53;
+}
+.dlg-go {
+  background: #7a6a53;
+  border: 1.5px solid #7a6a53;
+  color: #fffdf9;
+}
+/* Deleting, removing and voiding are the ones you can't take back. Red so the
+   confirming button never gets tapped on autopilot. */
+.dlg-danger {
+  background: #a4442c;
+  border: 1.5px solid #a4442c;
+  color: #fffdf9;
+}

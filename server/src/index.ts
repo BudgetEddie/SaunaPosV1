@@ -346,6 +346,58 @@ async function getSettings() {
   });
 }
 
+// ---- The cash discount ----------------------------------------------------
+//
+// Guests who settle up in cash get money off their ENTRY charge. This is the
+// only place in the app where what something costs depends on how it's paid
+// for, so the rule lives in exactly one function and everything else asks it.
+//
+// Two callers, deliberately:
+//   GET /visits/:id/cash-discount — so the Checkout screen can SHOW the
+//     discount while the staff member is still deciding, without doing this
+//     arithmetic itself. The browser has been the wrong place for money maths
+//     in this project before.
+//   POST /check-out — the real thing, written inside the payment transaction.
+//
+// Why not write it the moment someone taps "Cash"? Because tapping Cash is not
+// paying. Staff tap it, get distracted, close the screen — and a discount left
+// behind on an open tab would follow the guest to a card payment later. The
+// tender isn't real until the money is taken, so neither is the discount.
+//
+// Returns null when it doesn't apply, which is most of the time.
+function cashDiscountFor(
+  lineItems: { amount: number; taxRate: number; isAdmission: boolean }[],
+  settings: { cashDiscount: number; cashDiscountMinEntry: number }
+) {
+  // Zero means the house isn't running the offer. This is the default, so a
+  // fresh database never starts handing money back on its own.
+  if (settings.cashDiscount <= 0) return null;
+
+  // No entry charge, no entry discount. This is what keeps takeout out of it —
+  // a counter sale has no admission line — and it also covers a guest checked
+  // in before any default admission was configured.
+  const admission = lineItems.find((li) => li.isAdmission);
+  if (!admission) return null;
+
+  // Below the house minimum. A $3 child admission doesn't qualify, and neither
+  // does a pass-funded visit, whose entry charge is $0.
+  //
+  // This test is also the only reason no clamping is needed anywhere: while the
+  // minimum is larger than the discount, the entry charge cannot go negative.
+  if (admission.amount < settings.cashDiscountMinEntry) return null;
+
+  return {
+    description: "Cash discount",
+    amount: -settings.cashDiscount,
+    // The ENTRY charge's own tax rate, not the tab's blended one that
+    // /apply-discount uses. That difference is the whole point: this discount
+    // is against one charge, so it must take tax off that charge and nothing
+    // else. $5 off a $30 entry at 13% relieves 65c of tax, leaving the drinks
+    // beside it taxed exactly as they were.
+    taxRate: admission.taxRate,
+  };
+}
+
 // The house tax rate and default entry charge. Any signed-in user can read it —
 // the till needs it to price custom charges.
 app.get("/settings", async (_req, res) => {
@@ -357,8 +409,13 @@ app.get("/settings", async (_req, res) => {
 // This only affects things priced FROM NOW ON. Existing menu items keep their
 // own rates, and charges already on bills keep the rate they were sold at.
 app.put("/settings", requireAdmin, async (req, res) => {
-  const { taxRate, defaultAdmissionItemId } = req.body;
-  const data: { taxRate?: number; defaultAdmissionItemId?: number | null } = {};
+  const { taxRate, defaultAdmissionItemId, cashDiscount, cashDiscountMinEntry } = req.body;
+  const data: {
+    taxRate?: number;
+    defaultAdmissionItemId?: number | null;
+    cashDiscount?: number;
+    cashDiscountMinEntry?: number;
+  } = {};
 
   // Stored as a decimal (0.13), not a percentage (13). The client does that
   // conversion before sending; this guards against a stray 13 arriving and
@@ -371,6 +428,36 @@ app.put("/settings", requireAdmin, async (req, res) => {
   }
   if (defaultAdmissionItemId !== undefined) {
     data.defaultAdmissionItemId = defaultAdmissionItemId === null ? null : Number(defaultAdmissionItemId);
+  }
+  // Both in dollars. Negatives are refused outright — a "discount" that added
+  // money to the bill is never what anyone meant.
+  if (cashDiscount !== undefined) {
+    if (typeof cashDiscount !== "number" || !Number.isFinite(cashDiscount) || cashDiscount < 0) {
+      return res.status(400).json({ error: "The cash discount must be a number of dollars, or 0 to switch it off" });
+    }
+    data.cashDiscount = cashDiscount;
+  }
+  if (cashDiscountMinEntry !== undefined) {
+    if (typeof cashDiscountMinEntry !== "number" || !Number.isFinite(cashDiscountMinEntry) || cashDiscountMinEntry < 0) {
+      return res.status(400).json({ error: "The minimum entry fee must be a number of dollars" });
+    }
+    data.cashDiscountMinEntry = cashDiscountMinEntry;
+  }
+
+  // The minimum has to stay above the discount, and this is the check that
+  // makes that a rule rather than a hope. cashDiscountFor does no clamping — it
+  // relies on a qualifying entry charge always being bigger than the money
+  // coming off it, which is exactly what this guarantees.
+  //
+  // Compared against whichever value is NOT being changed, so raising the
+  // discount past a minimum set weeks ago is caught too.
+  const existing = await getSettings();
+  const nextDiscount = data.cashDiscount ?? existing.cashDiscount;
+  const nextMinEntry = data.cashDiscountMinEntry ?? existing.cashDiscountMinEntry;
+  if (nextDiscount > 0 && nextMinEntry <= nextDiscount) {
+    return res.status(400).json({
+      error: `The minimum entry fee must be more than the discount — otherwise a $${nextDiscount.toFixed(2)} discount could take an entry charge to zero or below.`,
+    });
   }
 
   const settings = await prisma.settings.upsert({
@@ -1046,6 +1133,28 @@ app.post("/visits/:visitId/apply-discount", requireAdmin, async (req, res) => {
   // every terminal without anything new to listen for.
   io.emit("bill:line-item-added", { visitId, line });
   res.status(201).json(line);
+});
+
+// What the cash discount WOULD be on this tab, if the guest paid cash right
+// now. Changes nothing — it exists so the Checkout screen can show the discount
+// and the real total while the staff member is still choosing how to be paid.
+//
+// The number comes from cashDiscountFor, the same function that writes the real
+// charge at check-out. That is the point of this endpoint: the browser never
+// works out the discount for itself, so the figure on screen and the figure in
+// the till cannot drift apart.
+//
+// Answers null when the discount doesn't apply, which is most of the time.
+app.get("/visits/:visitId/cash-discount", async (req, res) => {
+  const visitId = Number(req.params.visitId);
+  const visit = await prisma.visit.findUnique({
+    where: { id: visitId },
+    include: { bill: { include: { lineItems: true } } },
+  });
+  if (!visit || visit.checkOutAt || !visit.bill) {
+    return res.status(404).json({ error: "Active visit not found" });
+  }
+  res.json(cashDiscountFor(visit.bill.lineItems, await getSettings()));
 });
 
 // Flag a locker as broken, or return it to service.
@@ -1829,6 +1938,8 @@ app.post("/check-out", async (req, res) => {
     }
   }
 
+  const settings = await getSettings();
+
   const { updatedVisit, updatedLocker, updatedBill, updatedCustomer } = await prisma.$transaction(async (tx) => {
     // 1. End the visit. Stamping the time is what makes it stop being "active"
     //    and drop off every screen showing who's in the building.
@@ -1841,11 +1952,51 @@ app.post("/check-out", async (req, res) => {
       where: { id: lockerId },
       data: { status: "AVAILABLE" },
     });
+
+    // 2b. THE CASH DISCOUNT. This is the moment — and the only moment — that
+    //     anything knows the guest is paying cash, so it's where the money
+    //     comes off. See cashDiscountFor for the rule itself.
+    //
+    //     The tab is re-read HERE, inside the transaction, rather than trusted
+    //     from earlier in the request. Bills change under an open Checkout
+    //     screen all the time: the kitchen adds a drink, another terminal swaps
+    //     the entry charge. What the discount is judged against has to be the
+    //     tab as it stands at the instant of payment.
+    //
+    //     No "have we already done this?" check is needed. Checking out is
+    //     refused on a visit that's already checked out, so this runs once.
+    if (paymentMethod === "CASH") {
+      const bill = await tx.bill.findUnique({
+        where: { visitId },
+        include: { lineItems: true },
+      });
+      const discount = bill ? cashDiscountFor(bill.lineItems, settings) : null;
+      if (bill && discount) {
+        await tx.billLineItem.create({
+          data: {
+            billId: bill.id,
+            description: discount.description,
+            amount: discount.amount,
+            taxRate: discount.taxRate,
+            // NOT the entry charge, even though it's the entry charge this
+            // comes off. Marking it as one would put two admissions on the
+            // bill, and an admission swap deletes by that flag.
+            isAdmission: false,
+          },
+        });
+      }
+    }
+
     // 3. Close the bill. From here it's read-only: charges can no longer be
     //    voided, and undoing it means a refund instead.
     const updatedBill = await tx.bill.update({
       where: { visitId },
       data: { paymentMethod, paidAt: new Date() },
+      // The charges come back with it so the screen that just took the money
+      // can show what was actually recorded, rather than the total it had
+      // worked out before sending. Those two used to be the same thing; with a
+      // discount applied here they aren't.
+      include: { lineItems: true },
     });
 
     // 4. Clear any of this visit's unfinished kitchen orders off the kitchen screen

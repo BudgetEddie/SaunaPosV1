@@ -144,6 +144,21 @@ model Settings {
   // Note this is a loose number, not a proper link — deleting that menu item
   // would leave this pointing at nothing.
   defaultAdmissionItemId Int?
+  // THE CASH DISCOUNT. Dollars taken off the entry charge when a guest settles
+  // up in cash — 5 means −$5.00. Zero switches the whole thing off, which is
+  // also the default, so a fresh database never starts discounting on its own.
+  //
+  // Applied by the server at the moment of checkout, since that is the only
+  // point at which anything knows how the guest is paying. See cashDiscountFor
+  // in server/src/index.ts — it is the single place this rule is decided.
+  cashDiscount           Float @default(0)
+  // How big the entry charge has to be before the discount applies at all.
+  // 15 means a $30 day rate qualifies but a $3 child admission doesn't, and
+  // neither does a pass-funded visit, whose entry charge is $0.
+  //
+  // This is what keeps the entry charge from being driven negative: as long as
+  // the minimum is larger than the discount, there is nothing to clamp.
+  cashDiscountMinEntry   Float @default(0)
 }
 
 // A menu section: "Drinks", "Admission", "Massage".

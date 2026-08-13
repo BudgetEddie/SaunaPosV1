@@ -32,6 +32,7 @@ import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
+import { useDialog } from "./DialogProvider.tsx";
 import { type Table } from "./types.ts";
 
 const socket = io("http://localhost:4000");
@@ -93,6 +94,7 @@ function Tables() {
   // Changing how many tables there are. Admin work, so it's behind the manager
   // password for anyone who isn't one — the server is what actually refuses.
   const askOverride = useOverride();
+  const dialog = useDialog();
   const [editingCount, setEditingCount] = useState(false);
   // Editing the seat count of the ONE selected table. Null when closed; a
   // string while typing, so a half-typed number isn't forced into one.
@@ -147,7 +149,7 @@ function Tables() {
     setBusy(false);
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
     setNote("");
@@ -172,7 +174,7 @@ function Tables() {
     setBusy(false);
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
     setEditingCount(false);
@@ -196,7 +198,7 @@ function Tables() {
     setBusy(false);
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
     setEditingSeats(null);

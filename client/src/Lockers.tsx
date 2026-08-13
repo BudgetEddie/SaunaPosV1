@@ -30,6 +30,7 @@ import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { type Locker, type Visit } from "./types.ts";
+import { useDialog } from "./DialogProvider.tsx";
 
 const socket = io("http://localhost:4000");
 
@@ -90,6 +91,7 @@ function poolStats(lockers: Locker[]) {
 }
 
 function Lockers() {
+  const dialog = useDialog();
   const [lockers, setLockers] = useState<Locker[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [pool, setPool] = useState<"MALE" | "FEMALE">("MALE");
@@ -157,7 +159,7 @@ function Lockers() {
     setBusy(false);
     if (!res.ok) {
       const { error } = await res.json();
-      alert(error);
+      await dialog.say(error, { title: "That didn't work" });
       return;
     }
     setNote("");

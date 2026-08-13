@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Settings" ADD COLUMN     "cashDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "cashDiscountMinEntry" DOUBLE PRECISION NOT NULL DEFAULT 0;
