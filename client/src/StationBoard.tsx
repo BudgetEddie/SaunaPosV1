@@ -37,11 +37,12 @@
 //   POST   /visits/:id/confirm-order → the composer (same as PointOfSale uses)
 // ============================================================================
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
 import { authFetch } from "./authFetch.ts";
 import { type Category, type Visit } from "./types.ts";
 import { useDialog } from "./DialogProvider.tsx";
+import { playNewOrderChime } from "./clickSound.ts";
 
 // The live line to the server. This screen depends on it more than any other —
 // it's how an order rung up at the front desk appears here seconds later
@@ -188,8 +189,49 @@ function StationBoard({ station }: { station: Station }) {
   // Only THIS board's tickets. The server does the filtering rather than the
   // browser, so a bar terminal in the lounge never holds the whole floor's
   // guest names, locker numbers and allergy notes just to show four drinks.
+  // Every item this board has already shown the cook, by id. An id that wasn't
+  // here last time is work nobody has seen yet — which is what earns a chime.
+  //
+  // Tracking ITEMS rather than whole tickets is the point: a second round on an
+  // open tab joins the guest's existing card instead of making a new one, so
+  // watching for new cards alone would let a drink arrive in silence while the
+  // card quietly grew a line.
+  //
+  // Null until the first load has happened, which is how "the board just opened
+  // with four tickets already on it" is told apart from "four tickets just
+  // landed". Only the second one should make a noise.
+  const seenItemIds = useRef<Set<number> | null>(null);
+
   const loadOrders = () =>
-    authFetch(`/orders/open?station=${station}`).then((r) => r.json()).then(setOrders);
+    authFetch(`/orders/open?station=${station}`).then((r) => r.json()).then((next: KitchenOrder[]) => {
+      chimeIfNewWork(next);
+      setOrders(next);
+    });
+
+  // Cancelled items are left out on purpose. They're still on the ticket so the
+  // cook notices something was pulled, but they aren't work — and a cancelled
+  // item shouldn't be able to ring the bell by dropping out of the set and
+  // reappearing.
+  const chimeIfNewWork = (next: KitchenOrder[]) => {
+    const ids = new Set<number>();
+    for (const order of next) {
+      for (const item of order.items) {
+        if (!item.canceled) ids.add(item.id);
+      }
+    }
+    const seen = seenItemIds.current;
+    seenItemIds.current = ids;
+    if (seen === null) return; // first load — fill the set, stay quiet
+
+    // One chime per refetch, however much arrived at once. A till ringing up
+    // four drinks together is one trip to the board, not four alarms.
+    for (const id of ids) {
+      if (!seen.has(id)) {
+        playNewOrderChime();
+        return;
+      }
+    }
+  };
   const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
   const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
 

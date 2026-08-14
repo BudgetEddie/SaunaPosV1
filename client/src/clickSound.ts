@@ -1,6 +1,7 @@
 // ============================================================================
 // THE APP'S SOUNDS — a tick when staff tap something, a chime when a guest is
-// checked out, and a short buzz when the app says no to something.
+// checked out, a softer chime when food lands on a station board, and a short
+// buzz when the app says no to something.
 //
 // WHAT IT IS
 //   One listener, attached once when the app starts, that plays a short click
@@ -8,13 +9,15 @@
 //   screens: there are hundreds of tappable things across the app and adding a
 //   line to each would be a permanent tax on every future change.
 //
-//   The chime and the error buzz are both exceptions, and deliberately so:
-//   each marks one specific kind of moment rather than every tap, so each is
-//   called by hand from the place that actually knows it happened.
+//   The other three are exceptions, and deliberately so: each marks one
+//   specific kind of moment rather than every tap, so each is called by hand
+//   from the place that actually knows it happened.
 //
 // WHERE IT'S USED
 //   start() is called once from client/src/main.tsx.
 //   playCheckoutChime() is called from Checkout.tsx when the paid card appears.
+//   playNewOrderChime() is called from StationBoard.tsx when work the cook
+//     hasn't seen before arrives on their board.
 //   playErrorSound() is called from DialogProvider.tsx, for every message box
 //     that isn't just good news, and from OverrideProvider.tsx when a manager's
 //     password is refused. Between those two, nothing else in the app needs to
@@ -22,7 +25,7 @@
 //     one or the other.
 //   Shell.tsx reads and flips the on/off switch in the sidebar.
 //
-// ONE SWITCH COVERS ALL THREE. The sidebar toggle silences the whole app
+// ONE SWITCH COVERS ALL FOUR. The sidebar toggle silences the whole app
 // rather than just the tapping — a room that wants quiet wants it for all of it.
 //
 // WHAT COUNTS AS TAPPABLE
@@ -83,6 +86,26 @@ export function playCheckoutChime() {
   // Same swallowed rejection as the click. A browser that refuses to play it
   // has cost us a flourish, not a checkout.
   chime.play().catch(() => {});
+}
+
+// THE NEW-ORDER CHIME. Something has landed on a station board that the cook
+// hasn't seen yet.
+//
+// Deliberately softer and lower than the checkout ding, and quieter here too.
+// The two are the only "good news" sounds in the app and they can end up in
+// earshot of each other, so they have to be tellable apart without looking:
+// the bright rising one means money came in, this gentler one means there's
+// work to do.
+const NEW_ORDER_VOLUME = 0.6;
+let newOrder: HTMLAudioElement | null = null;
+
+export function playNewOrderChime() {
+  if (!soundEnabled() || !newOrder) return;
+  // Rewound rather than layered. A rush lands several tickets in a few seconds
+  // and overlapping copies of a 1.4s chime would turn into a smear rather than
+  // a count — restarting keeps each arrival a distinct, recognisable sound.
+  newOrder.currentTime = 0;
+  newOrder.play().catch(() => {});
 }
 
 // THE ERROR BUZZ. Short and flat on purpose — the opposite shape of the
@@ -147,6 +170,10 @@ export function start() {
   // Loaded up front so the first checkout of the day chimes on time rather
   // than a beat late while the file is still being fetched.
   chime.preload = "auto";
+
+  newOrder = new Audio("/sounds/new-order.mp3");
+  newOrder.volume = NEW_ORDER_VOLUME;
+  newOrder.preload = "auto";
 
   errorSound = new Audio("/sounds/error.mp3");
   errorSound.volume = ERROR_VOLUME;
