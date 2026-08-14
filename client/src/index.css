@@ -26,7 +26,7 @@
    HOW IT'S ORGANISED
    ------------------
    Class names carry a short prefix saying which screen owns them:
-       lg-   Login.tsx              k-    Kitchen.tsx
+       lg-   Login.tsx              k-    StationBoard.tsx
        cd-   CustomerDirectory.tsx  rp-   Reports.tsx
        pos-  PointOfSale.tsx        mn-   MenuPage.tsx
 
@@ -353,7 +353,7 @@ body {
      popIn     the paid-confirmation card springing into view
      toastIn   the message that slides up from the bottom
      freshRow  the green flash on a charge that just appeared from elsewhere
-   The first two are also used by Kitchen.tsx.
+   The first two are also used by StationBoard.tsx.
    --------------------------------------------------------------------------- */
 
 @keyframes pulseDot {
@@ -375,7 +375,7 @@ body {
 
 /* ---------------------------------------------------------------------------
    ---- Kitchen board ----
-   Kitchen.tsx. `fadeIn` is how a new ticket appears rather than snapping in;
+   StationBoard.tsx. `fadeIn` is how a new ticket appears rather than snapping in;
    the scrollbar rules stop a busy column looking like a spreadsheet.
    --------------------------------------------------------------------------- */
 

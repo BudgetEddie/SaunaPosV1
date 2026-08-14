@@ -86,6 +86,7 @@ function Shell() {
           <NavLink to="/customers" className="side-link">Customer Directory</NavLink>
           <NavLink to="/pos" className="side-link">Point of Sale</NavLink>
           <NavLink to="/kitchen" className="side-link">Kitchen</NavLink>
+          <NavLink to="/bar" className="side-link">Bar</NavLink>
           <NavLink to="/lockers" className="side-link">Lockers</NavLink>
           <NavLink to="/tables" className="side-link">Tables</NavLink>
           {/* Reports and Menu are no longer hidden from staff. Both now ask

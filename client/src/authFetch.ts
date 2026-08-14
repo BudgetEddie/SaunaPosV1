@@ -9,7 +9,7 @@
 // WHERE IT'S USED
 //   The most-imported file in the client — 10 of the 12 modules use it:
 //     Shell.tsx, Login.tsx, Home.tsx, CustomerDirectory.tsx,
-//     PointOfSale.tsx, Checkout.tsx, Kitchen.tsx, MenuPage.tsx,
+//     PointOfSale.tsx, Checkout.tsx, StationBoard.tsx, MenuPage.tsx,
 //     Reports.tsx, Receipt.tsx
 //   Login.tsx is the odd one out: it uses plain `fetch` with API, because at
 //   sign-in time there is no token yet to attach.

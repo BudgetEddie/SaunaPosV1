@@ -66,10 +66,11 @@ on a kitchen ticket. Prisma turns that into database language. The tea now exist
 **5. The broadcast.** Here's the part that makes it feel live. The server shouts a message to
 *every* connected terminal at once — `"orders:changed"` — over a **WebSocket** (glossary again).
 
-**6. The reaction.** The kitchen screen, `client/src/Kitchen.tsx`, is listening for exactly that
-shout. On hearing it, it ignores the message's contents entirely and simply re-asks the server
-"what are all the open orders?" A second later the tea appears on the kitchen board — on a
-different computer, with nobody touching it.
+**6. The reaction.** The ticket boards, `client/src/StationBoard.tsx`, are listening for exactly
+that shout. On hearing it, they ignore the message's contents entirely and simply re-ask the
+server "what are all the open orders for my board?" A second later the tea appears on the bar
+board — on a different computer, with nobody touching it. (Tea is a drink, so it goes to the bar,
+not the kitchen. Which board a thing lands on is set per menu section on the Menu page.)
 
 That last step is the pattern used *everywhere* in this app, and it's worth stating plainly:
 
@@ -175,7 +176,7 @@ live in `client/src/types.ts`.
 | `CustomerDirectory.tsx` | Search customers, edit them, check them in. |
 | `PointOfSale.tsx` | The till: pick a guest, build an order, add it to their tab. |
 | `Checkout.tsx` | Settle the tab and take payment. Lives inside Point of Sale. |
-| `Kitchen.tsx` | The cooks' ticket board. |
+| `StationBoard.tsx` | The ticket board. Used twice: it draws the Kitchen screen and the Bar screen. |
 | `Reports.tsx` | Sales figures and refunds. Admin only. |
 | `MenuPage.tsx` | Edit the menu — categories, items, prices, photos. Admin only. |
 | `Receipt.tsx` | A printable receipt, opened in its own tab. |

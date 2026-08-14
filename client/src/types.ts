@@ -12,7 +12,7 @@
 //   server/prisma/schema.prisma. These are the client's copy of them.
 //
 // WHERE IT'S USED
-//   PointOfSale.tsx, Checkout.tsx, Kitchen.tsx and MenuPage.tsx.
+//   PointOfSale.tsx, Checkout.tsx, StationBoard.tsx and MenuPage.tsx.
 //   Home.tsx, CustomerDirectory.tsx, Reports.tsx and Receipt.tsx each declare
 //   their own narrower versions instead, because they only use a few fields.
 //
@@ -52,8 +52,9 @@ export type MenuItem = {
   taxRate: number;
   imageData: string | null;
   available: boolean;
-  // Whether selling this prints a kitchen ticket. Only ever turns tickets off —
-  // the category decides whether the kitchen is involved at all.
+  // Whether selling this prints a ticket at its category's station. Only ever
+  // turns tickets off — the category decides whether a ticket is made at all,
+  // and which board it goes to.
   sendsToKitchen: boolean;
   visitCredits: number;
   redeemsPass: boolean;
@@ -65,16 +66,19 @@ export type MenuItem = {
   discountValue: number;
 };
 
-// A menu section, with its items nested inside. Two flags drive behaviour:
-//   isKitchen   — ordering from here prints a cooking ticket.
+// A menu section, with its items nested inside. Three flags drive behaviour:
+//   isKitchen   — ordering from here prints a ticket at all.
+//   station     — WHICH board that ticket goes to, "KITCHEN" or "BAR".
+//                 Ignored on a section that prints nothing.
 //   isAdmission — these are entry charges, and picking one REPLACES the
 //                 existing entry charge rather than adding to the tab.
-// Used by PointOfSale.tsx, Kitchen.tsx and MenuPage.tsx.
+// Used by PointOfSale.tsx, StationBoard.tsx and MenuPage.tsx.
 export type Category = {
   id: number;
   name: string;
   group: string;
   isKitchen: boolean;
+  station: string;
   isAdmission: boolean;
   items: MenuItem[];
 };
@@ -102,14 +106,17 @@ export type BillLineItem = {
 // Only ever seen nested inside a Visit.
 export type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 
-// A kitchen ticket. `status` walks QUEUED → IN_PROGRESS → READY → COMPLETE as
-// the cooks tap through it on the Kitchen board.
-// An item marked `canceled` isn't deleted — it stays visible so the kitchen
-// notices something was pulled, then they dismiss it themselves.
+// A ticket. `status` walks QUEUED → IN_PROGRESS → READY → COMPLETE as staff tap
+// through it on whichever board it's on, and `station` says which board that is
+// — "KITCHEN" or "BAR". One guest ordering a burger and a beer has TWO of
+// these, one per board, each moving at its own pace.
+// An item marked `canceled` isn't deleted — it stays visible so the cook or the
+// bar notices something was pulled, then they dismiss it themselves.
 // Only ever seen nested inside a Visit.
 export type Order = {
   id: number;
   status: string;
+  station: string;
   items: { id: number; name: string; note: string | null; canceled: boolean }[];
 };
 
@@ -117,7 +124,7 @@ export type Order = {
 // which locker they have, what they owe, and what the kitchen is making them.
 // `redeemsPass` means their entry is being paid with a prepaid pass rather
 // than money — the balance is only actually deducted at checkout.
-// Used by PointOfSale.tsx, Checkout.tsx and Kitchen.tsx — the "two screens
+// Used by PointOfSale.tsx, Checkout.tsx and StationBoard.tsx — the "two screens
 // read the same visit" the note at the top refers to.
 export type Visit = {
   id: number;

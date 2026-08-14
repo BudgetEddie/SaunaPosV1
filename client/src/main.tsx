@@ -25,7 +25,7 @@ import Shell from "./Shell.tsx";
 import Home from "./Home.tsx";
 import CustomerDirectory from "./CustomerDirectory.tsx";
 import PointOfSale from "./PointOfSale.tsx";
-import Kitchen from "./Kitchen.tsx";
+import StationBoard from "./StationBoard.tsx";
 import Lockers from "./Lockers.tsx";
 import Tables from "./Tables.tsx";
 import Reports from "./Reports.tsx";
@@ -78,7 +78,13 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/" element={<Home />} />
               <Route path="/customers" element={<CustomerDirectory />} />
               <Route path="/pos" element={<PointOfSale />} />
-              <Route path="/kitchen" element={<Kitchen />} />
+              {/* Two boards, ONE screen. StationBoard is mounted twice and
+                  told which station it is; it fetches only that board's
+                  tickets and offers only that board's half of the menu. There
+                  is no separate Bar.tsx on purpose — see the note at the top
+                  of StationBoard.tsx. */}
+              <Route path="/kitchen" element={<StationBoard station="KITCHEN" />} />
+              <Route path="/bar" element={<StationBoard station="BAR" />} />
               <Route path="/lockers" element={<Lockers />} />
               <Route path="/tables" element={<Tables />} />
               {/* These last two need admin rights. Staff can now open them and

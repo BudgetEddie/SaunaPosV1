@@ -374,9 +374,16 @@ function MenuPage() {
     await showError(await authFetch(`/categories/${category.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
+      // ⚠️ EVERY FIELD, EVERY TIME. The server REPLACES the category with what's
+      //    in here rather than patching the bits that changed — and this one
+      //    function is behind Rename, Admission, Move AND Send to bar. Drop a
+      //    line from this object and that field silently resets to its default
+      //    the next time anyone renames anything: leave `station` out and
+      //    renaming "Drinks" marches every drink back onto the cook's board.
       body: JSON.stringify({
         name: changes.name ?? category.name,
         group: changes.group ?? category.group,
+        station: changes.station ?? category.station,
         isAdmission: changes.isAdmission ?? category.isAdmission,
       }),
     }, approval));
@@ -388,7 +395,9 @@ function MenuPage() {
     const ok = await showError(await authFetch(`/categories`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newCatName.trim(), group: catFormGroup, isAdmission: false }),
+      // New sections start at the kitchen — the board that's always staffed.
+      // Send it to the bar afterwards if that's where it belongs.
+      body: JSON.stringify({ name: newCatName.trim(), group: catFormGroup, station: "KITCHEN", isAdmission: false }),
     }, approval));
     if (!ok) return;
     setNewCatName("");
@@ -604,6 +613,23 @@ function MenuPage() {
                           )}
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "none" }}>
+                          {/* WHICH BOARD this section's tickets print on. Shown
+                              as a badge as well as a button, deliberately: the
+                              button beside it names the ACTION ("Send to Bar"),
+                              so on its own you'd have to read it backwards to
+                              work out where the drinks currently go. This says
+                              it outright. Merchandise has no board, so no badge.
+
+                              It lives in this right-hand group rather than up
+                              beside the category name because that left group
+                              stretches and its contents don't shrink — a fourth
+                              thing in there pushed straight through the price
+                              range and sat on top of it. */}
+                          {group.id === "FOOD_DRINK" && (
+                            <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: .5, textTransform: "uppercase", color: "#7a6a53", background: "#efe7d9", borderRadius: 20, padding: "3px 9px" }}>
+                              {category.station === "BAR" ? "Bar" : "Kitchen"}
+                            </div>
+                          )}
                           <div style={{ fontSize: 11.5, fontWeight: 700, color: "#b8ab97" }}>{range}</div>
                           <button onClick={() => newItem(category.id)} style={CHIP_BTN}>+ Item</button>
                           <button
@@ -641,10 +667,27 @@ function MenuPage() {
                               {category.isAdmission ? "Not admission" : "Admission"}
                             </button>
                           )}
+                          {/* Which board this section's tickets go to. Only
+                              Food & drinks has a board at all — a towel reaches
+                              neither, so offering the switch there would be a
+                              control that does nothing.
+
+                              Tickets ALREADY on a board don't move. A tea being
+                              brewed stays on the cook's screen; the next tea
+                              goes to the bar. */}
+                          {group.id === "FOOD_DRINK" && (
+                            <button
+                              onClick={() => saveCategory(category, { station: category.station === "BAR" ? "KITCHEN" : "BAR" })}
+                              style={{ ...CHIP_BTN, border: "none", background: "transparent", color: "#a89a86" }}
+                            >
+                              {category.station === "BAR" ? "Send to Kitchen" : "Send to Bar"}
+                            </button>
+                          )}
                           {/* "Move" swaps a category between the two halves.
                               It's more than cosmetic: moving something into
-                              Food & drinks makes it start printing kitchen
-                              tickets, and moving it out stops that. */}
+                              Food & drinks makes it start printing tickets, and
+                              moving it out stops that. A section moved back in
+                              lands at the kitchen, whatever it was before. */}
                           <button
                             onClick={() => saveCategory(category, { group: group.id === "FOOD_DRINK" ? "MERCH_SERVICE" : "FOOD_DRINK" })}
                             style={{ ...CHIP_BTN, border: "none", background: "transparent", color: "#a89a86" }}
@@ -922,7 +965,13 @@ function MenuPage() {
               {!isMerch && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#f7f3ea", borderRadius: 12, padding: "12px 14px" }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 800 }}>Sends a ticket to the kitchen</div>
+                    {/* Names the board this item's section actually goes to,
+                        rather than always saying "kitchen" — on a Drinks
+                        section that would be plain wrong. The switch itself is
+                        unchanged: it can only ever turn a ticket OFF. */}
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>
+                      Sends a ticket to the {draftCategory?.station === "BAR" ? "bar" : "kitchen"}
+                    </div>
                     <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
                       Switch off for anything handed straight over — bottled drinks, packaged snacks
                     </div>

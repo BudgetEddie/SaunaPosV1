@@ -492,9 +492,25 @@ app.get("/categories", async (_req, res) => {
   res.json(categories);
 });
 
+// WHICH BOARD a category's tickets print on, worked out from what the browser
+// asked for. Anything that isn't explicitly the bar is the kitchen, and a
+// section that prints nothing at all is forced back to the kitchen so it can't
+// sit in the database claiming a station it will never use.
+//
+// The fallback direction is deliberate and is the rule this whole feature
+// follows: when in doubt, the KITCHEN. That board has existed for a year, is
+// always staffed, and is on a wall. A drink that wrongly appears there is
+// noticed in seconds by someone whose job is to read it. The opposite mistake —
+// a ticket that reaches no board at all — has no error, no card, and no signal
+// until a guest asks where their order is. Fail the noisy way.
+function stationFor(group: string, station: unknown) {
+  if (group !== "FOOD_DRINK") return "KITCHEN" as const;
+  return station === "BAR" ? ("BAR" as const) : ("KITCHEN" as const);
+}
+
 // Add a category. ADMIN ONLY.
 app.post("/categories", requireAdmin, async (req, res) => {
-  const { name, group, isAdmission } = req.body;
+  const { name, group, isAdmission, station } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   // Anything that isn't explicitly merchandise is treated as food and drink.
   const menuGroup = group === "MERCH_SERVICE" ? "MERCH_SERVICE" : "FOOD_DRINK";
@@ -503,8 +519,10 @@ app.post("/categories", requireAdmin, async (req, res) => {
       data: {
         name,
         group: menuGroup,
-        // Food & drinks is what the kitchen cooks — that's the whole rule now.
+        // Food & drinks is what gets made to order — that's the whole rule for
+        // whether a ticket prints. `station` below decides where it prints.
         isKitchen: menuGroup === "FOOD_DRINK",
+        station: stationFor(menuGroup, station),
         isAdmission: Boolean(isAdmission),
       },
     });
@@ -518,12 +536,19 @@ app.post("/categories", requireAdmin, async (req, res) => {
   }
 });
 
-// Rename a category, move it between the two halves, or toggle its admission
-// flag. ADMIN ONLY. Moving into Food & drinks starts it printing kitchen
-// tickets; moving out stops that.
+// Rename a category, move it between the two halves, send it to the other
+// board, or toggle its admission flag. ADMIN ONLY. Moving into Food & drinks
+// starts it printing tickets; moving out stops that.
+//
+// ⚠️ THIS REPLACES THE WHOLE CATEGORY, it doesn't patch it. Every field is
+//    rewritten from the body on every call, and the browser's saveCategory is
+//    the one function behind Rename, Admission, Move AND Send to bar. So a
+//    field the browser forgets to send is a field that gets reset to its
+//    default — leave `station` out and renaming "Drinks" quietly marches every
+//    drink back onto the cook's board. If you add a field here, add it there.
 app.put("/categories/:id", requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const { name, group, isAdmission } = req.body;
+  const { name, group, isAdmission, station } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   const menuGroup = group === "MERCH_SERVICE" ? "MERCH_SERVICE" : "FOOD_DRINK";
   const category = await prisma.category.update({
@@ -532,6 +557,7 @@ app.put("/categories/:id", requireAdmin, async (req, res) => {
       name,
       group: menuGroup,
       isKitchen: menuGroup === "FOOD_DRINK",
+      station: stationFor(menuGroup, station),
       isAdmission: Boolean(isAdmission),
     },
   });
@@ -1381,7 +1407,7 @@ app.put("/tables/:tableId/seats", requireAdmin, async (req, res) => {
 // kitchen order, pass credits apply — all in a single transaction.
 //
 // THE BUSIEST ENDPOINT IN THE APP. Called from both client/src/PointOfSale.tsx
-// (the till's "Add to tab") and client/src/Kitchen.tsx (the counter composer),
+// (the till's "Add to tab") and client/src/StationBoard.tsx (the counter composer),
 // which is why an order placed either way behaves identically.
 //
 // The client sends one entry per unit — three teas arrive as three entries,
@@ -1431,8 +1457,12 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
     return res.status(400).json({ error: "This order has no customer to bill" });
   }
 
-  // Which of these need cooking, and how many passes this order grants in
+  // Which of these get made to order, and how many passes this order grants in
   // total (usually zero — only pass packs have any).
+  //
+  // `isKitchen` has always meant "this prints a ticket", not "this goes to the
+  // kitchen" — that reading only ever worked because there was one board. It
+  // still answers WHETHER; `station` below answers WHERE.
   const kitchenItems = items.filter((i: { isKitchen?: boolean }) => i.isKitchen);
   const passCredits = items.reduce(
     (sum: number, i: { visitCredits?: number }) => sum + (Number(i.visitCredits) || 0),
@@ -1458,32 +1488,51 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
       });
     }
 
-    // 2. Send the food to the kitchen. Everything joins the guest's existing
-    //    un-started ticket if there is one, so a second round of drinks lands
-    //    on the same card rather than making the cook juggle two.
-    if (kitchenItems.length > 0) {
+    // 2. Send the food to the kitchen and the drinks to the bar. TWO SEPARATE
+    //    TICKETS, always — neither board ever shows the other's items, which is
+    //    why this is a loop over boards rather than one card with a mixed list.
+    //    A burger and an orange juice make two cards, and the guest gets each
+    //    as it's ready instead of the drink going warm waiting for the grill.
+    for (const station of ["KITCHEN", "BAR"] as const) {
+      // Anything the browser didn't label, or labelled with something we don't
+      // recognise, counts as kitchen. See stationFor above for why that
+      // direction and not the other.
+      const forStation = kitchenItems.filter(
+        (i: { station?: string }) => (i.station === "BAR" ? "BAR" : "KITCHEN") === station
+      );
+      if (forStation.length === 0) continue;
       // Joins the guest's un-started ticket only if it's going to the SAME
-      // place. A second round for a different table starts its own card —
-      // otherwise the cook would hold one ticket naming two destinations and
-      // have to guess which half goes where.
-      let order = await tx.order.findFirst({ where: { visitId, status: "QUEUED", tableId } });
+      // place, on the SAME board. A second round for a different table starts
+      // its own card — otherwise the cook would hold one ticket naming two
+      // destinations and have to guess which half goes where.
+      //
+      // `station` in here is not optional. Leave it out and the first round of
+      // drinks joins the QUEUED food card and lands on the cook's board —
+      // silently, and only for guests who ordered food first.
+      let order = await tx.order.findFirst({
+        where: { visitId, status: "QUEUED", tableId, station },
+      });
       if (!order) {
-        order = await tx.order.create({ data: { visitId, tableId } });
+        order = await tx.order.create({ data: { visitId, tableId, station } });
       }
-      for (const it of kitchenItems) {
+      for (const it of forStation) {
         await tx.orderItem.create({
           data: { orderId: order.id, name: it.name, note: it.note || null },
         });
       }
-      // Somebody is sitting there, so the board should say so. Only nudges a
-      // free table — an occupied one is already right, and this never touches
-      // one that's out of service because that was refused above.
-      if (table && table.status === "AVAILABLE") {
-        await tx.table.update({
-          where: { id: table.id },
-          data: { status: "OCCUPIED", occupiedSince: new Date() },
-        });
-      }
+    }
+
+    // Somebody is sitting there, so the board should say so. Deliberately
+    // OUTSIDE the loop above: it has to happen once, not once per board, and it
+    // has to happen for a round of drinks with no food in it — a guest at table
+    // 4 with a beer is a guest at table 4. Only nudges a free table; an
+    // occupied one is already right, and this never touches one that's out of
+    // service because that was refused above.
+    if (kitchenItems.length > 0 && table && table.status === "AVAILABLE") {
+      await tx.table.update({
+        where: { id: table.id },
+        data: { status: "OCCUPIED", occupiedSince: new Date() },
+      });
     }
 
     // 3. Credit any passes bought. This one IS immediate, unlike spending a
@@ -1562,10 +1611,20 @@ app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, re
       orderBy: { createdAt: "asc" },
     });
     for (const order of openKitchenOrders) {
-      // Charges and kitchen items are matched BY NAME — there's no id linking
-      // a bill line to the thing the cook is making. So voiding one of two
-      // identical teas removes whichever is found first, which is fine because
-      // they're indistinguishable anyway.
+      // Charges and ticket items are matched BY NAME — there's no id linking a
+      // bill line to the thing being made. So voiding one of two identical teas
+      // removes whichever is found first, which is fine because they're
+      // indistinguishable anyway.
+      //
+      // This sweeps BOTH boards, which is what makes it still correct now that
+      // a visit can hold a kitchen ticket and a bar ticket at once: a menu item
+      // sits in exactly one category, a category has exactly one station, so a
+      // given name only ever appears on one board and the loop simply skips the
+      // other card. The one way to break that is two menu items with the SAME
+      // NAME in categories that go to different boards — item names aren't
+      // required to be unique, only category names are. There are no duplicate
+      // names in the menu today; if you ever add a "Water" to both the food and
+      // the drinks sections, voiding one could cancel the other.
       const match = order.items.find((i) => i.name === lineItem.description && !i.canceled);
       if (!match) continue;
       if (order.status === "QUEUED") {
@@ -1920,20 +1979,35 @@ app.get("/bills/:id", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// ---- Kitchen ----
-// The ticket board, served to client/src/Kitchen.tsx. Not admin-only — the
-// cooks need it. Note there's no endpoint here for CREATING an order: tickets
-// are born from /visits/:id/confirm-order above, so anything the kitchen makes
-// has always been charged for.
+// ---- Kitchen and bar ----
+// The ticket boards, served to client/src/StationBoard.tsx — which draws the
+// Kitchen screen and the Bar screen from the same code, told apart only by
+// which station it asks for. Not admin-only; the cooks and the bar need it.
+// Note there's no endpoint here for CREATING an order: tickets are born from
+// /visits/:id/confirm-order above, so anything either board makes has always
+// been charged for.
 // ---------------------------------------------------------------------------
 
-// Everything the kitchen still owes, oldest first — so the board reads as a
-// queue. Completed orders are simply not sent, which is how a card disappears
-// when a cook taps "Mark Picked Up".
-app.get("/orders/open", async (_req, res) => {
+// Everything a board still owes, oldest first — so it reads as a queue.
+// Completed orders are simply not sent, which is how a card disappears when a
+// cook taps "Mark Picked Up".
+//
+// ?station=BAR narrows it to one board. Left off, it's every open ticket in the
+// building, which is what the Home dashboard wants: it draws a row of counts
+// per board AND the takeout list from this one request.
+//
+// An unrecognised station is REFUSED rather than ignored. Quietly falling back
+// to "everything" on a typo'd ?station=BARR is how a bar screen ends up showing
+// the cook's food, and how nobody finds out for a week.
+app.get("/orders/open", async (req, res) => {
+  const asked = req.query.station;
+  const station = asked === "KITCHEN" || asked === "BAR" ? asked : undefined;
+  if (asked !== undefined && station === undefined) {
+    return res.status(400).json({ error: "Unknown station — expected KITCHEN or BAR" });
+  }
   const orders = await prisma.order.findMany({
-    where: { status: { not: "COMPLETE" } },
-    // `table` so the cook knows where to run it — see ticketWhere in Kitchen.tsx.
+    where: { status: { not: "COMPLETE" }, ...(station ? { station } : {}) },
+    // `table` so staff know where to run it — see ticketTag in StationBoard.tsx.
     include: { items: true, table: true, visit: { include: { customer: true, locker: true } } },
     orderBy: { createdAt: "asc" },
   });
@@ -2256,13 +2330,20 @@ app.post("/takeout", async (req, res) => {
       });
     }
 
-    // 4. Send the food. Unlike confirm-order there's no hunting for an existing
-    //    QUEUED ticket to join — this visit is one second old and has never had
-    //    an order before, so there is always exactly one ticket.
+    // 4. Send the food and the drinks. Unlike confirm-order there's no hunting
+    //    for an existing QUEUED ticket to join — this visit is one second old
+    //    and has never had an order before, so each board gets at most one
+    //    brand-new card. A takeout burger and coffee still make two: the cook
+    //    and the bar work in parallel, and the counter calls the number once
+    //    both are up.
     const kitchenItems = items.filter((i: { isKitchen?: boolean }) => i.isKitchen);
-    if (kitchenItems.length > 0) {
-      const order = await tx.order.create({ data: { visitId: visit.id } });
-      for (const it of kitchenItems) {
+    for (const station of ["KITCHEN", "BAR"] as const) {
+      const forStation = kitchenItems.filter(
+        (i: { station?: string }) => (i.station === "BAR" ? "BAR" : "KITCHEN") === station
+      );
+      if (forStation.length === 0) continue;
+      const order = await tx.order.create({ data: { visitId: visit.id, station } });
+      for (const it of forStation) {
         await tx.orderItem.create({
           data: { orderId: order.id, name: it.name, note: it.note || null },
         });

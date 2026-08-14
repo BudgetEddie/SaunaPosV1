@@ -50,6 +50,9 @@ type CartLine = {
   name: string;
   price: number;
   isKitchen: boolean;
+  // WHICH BOARD this makes a ticket on — "KITCHEN" or "BAR". Null on anything
+  // that makes no ticket at all (a towel, a discount, a custom charge).
+  station: string | null;
   visitCredits: number;
   taxRate: number;
   note: string;
@@ -262,7 +265,7 @@ function CartPanel({ lines, onBump, onNote, onClear, subtotal, tax, children }: 
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13.5, fontWeight: 700, lineHeight: 1.2 }}>{line.name}</div>
               <div style={{ fontSize: 11.5, fontWeight: 600, color: "#a89a86" }}>
-                {money(line.price)} each{line.isKitchen ? " · kitchen" : ""}
+                {money(line.price)} each{line.isKitchen ? (line.station === "BAR" ? " · bar" : " · kitchen") : ""}
                 {line.visitCredits > 0 ? ` · +${line.visitCredits} passes` : ""}
               </div>
             </div>
@@ -285,13 +288,13 @@ function CartPanel({ lines, onBump, onNote, onClear, subtotal, tax, children }: 
               {money(line.price * line.qty)}
             </div>
           </div>
-          {/* Only food and drink get a note box — there's nothing to
-              tell the kitchen about a towel. The note travels with the
-              item onto the ticket. */}
+          {/* Only things somebody makes get a note box — there's nothing to
+              tell anyone about a towel. The note travels with the item onto
+              the ticket, and the wording follows the board it's headed for. */}
           {line.isKitchen && (
             <input
               className="cd-in"
-              placeholder="Note for the kitchen (temp, allergy, prep…)"
+              placeholder={line.station === "BAR" ? "Note for the bar (no ice, extra lime…)" : "Note for the kitchen (temp, allergy, prep…)"}
               value={line.note}
               onChange={(e) => onNote(line.id, e.target.value)}
               style={{ marginTop: 8, fontSize: 12.5 }}
@@ -344,12 +347,18 @@ function billTotal(visit: Visit) {
   const tax = subtotal * visit.bill.taxRate;
   return { subtotal, tax, total: subtotal + tax };
 }
-// Anything the kitchen still owes this guest: orders that aren't COMPLETE, not
-// counting items an admin canceled.
+// Anything anyone still owes this guest, across BOTH boards: tickets that
+// aren't COMPLETE, not counting items an admin canceled.
 function openKitchen(visit: Visit) {
-  const orders = visit.orders.filter((o) => o.status !== "COMPLETE");
+  const orders = visit.orders
+    .filter((o) => o.status !== "COMPLETE")
+    .filter((o) => o.items.some((i) => !i.canceled));
   const count = orders.reduce((n, o) => n + o.items.filter((i) => !i.canceled).length, 0);
-  const ready = orders.some((o) => o.status === "READY" && o.items.some((i) => !i.canceled));
+  // EVERY open ticket has to be ready, not ANY of them. A guest can now have a
+  // kitchen ticket and a bar ticket at once, and with `some` the chip turned
+  // green the moment the burger was up — so the desk would hand the guest their
+  // food and send them away without the drink still being poured.
+  const ready = orders.length > 0 && orders.every((o) => o.status === "READY");
   return { count, ready };
 }
 // The little coloured pills on a guest card: their notes (allergies, warnings)
@@ -371,7 +380,9 @@ function chipsFor(visit: Visit) {
     chips.push(
       kitchen.ready
         ? { key: "kitchen", label: `Order ready · ${kitchen.count}`, ink: "#3f5540", bg: "#dfeada" }
-        : { key: "kitchen", label: `In kitchen · ${kitchen.count}`, ink: "#7a6a53", bg: "#efe7d9" }
+        // Not "In kitchen" any more — the count can include drinks the bar is
+        // pouring, and this one chip covers both boards.
+        : { key: "kitchen", label: `Being made · ${kitchen.count}`, ink: "#7a6a53", bg: "#efe7d9" }
     );
   }
   return chips;
@@ -663,11 +674,13 @@ function PointOfSale() {
       id: `m${item.id}`,
       name: item.name,
       price: item.price,
-      // BOTH have to be true. The category decides whether the kitchen is
-      // involved at all; the item can then opt out. Nothing can opt IN — a
-      // massage with sendsToKitchen somehow true still has
-      // category.isKitchen === false and stays off the board.
+      // BOTH have to be true. The category decides whether a ticket is printed
+      // at all; the item can then opt out. Nothing can opt IN — a massage with
+      // sendsToKitchen somehow true still has category.isKitchen === false and
+      // stays off both boards.
       isKitchen: category.isKitchen && item.sendsToKitchen,
+      // And if there IS a ticket, this is the board it goes to.
+      station: category.station,
       visitCredits: item.visitCredits,
       taxRate: item.taxRate,
       note: "",
@@ -687,6 +700,8 @@ function PointOfSale() {
       name: customName,
       price: amount,
       isKitchen: false,
+      // Nothing to make, so no board. A replacement towel isn't poured.
+      station: null,
       visitCredits: 0,
       taxRate: defaultTaxRate,
       note: "",
@@ -716,6 +731,7 @@ function PointOfSale() {
           name: line.name,
           amount: line.price,
           isKitchen: line.isKitchen,
+          station: line.station,
           visitCredits: line.visitCredits,
           taxRate: line.taxRate,
           note: line.note,
@@ -755,10 +771,16 @@ function PointOfSale() {
   //
   // ⚠ The object built below goes straight into JSON.stringify, so TYPESCRIPT
   // DOES NOT CHECK IT. This is the third place in the app with that hazard —
-  // confirmOrder here and submitOrder in Kitchen.tsx are the other two, and a
-  // missing `taxRate` in one of them is how every charge once got saved at 0%
-  // tax. If you ever add a field to a charge, add it in all three by eye. A
-  // clean Problems panel proves nothing about these three objects.
+  // confirmOrder here and submitOrder in StationBoard.tsx are the other two,
+  // and a missing `taxRate` in one of them is how every charge once got saved
+  // at 0% tax. If you ever add a field to a charge, add it in all three by eye.
+  // A clean Problems panel proves nothing about these three objects.
+  //
+  // The two MenuPage bodies (saveCategory, addCategory) are unchecked in the
+  // same way, so five in total. Where a miss can't be made harmless, the server
+  // is written to fail the NOISY way — a `station` that never arrives sends the
+  // ticket to the kitchen, which somebody sees, rather than to nowhere, which
+  // nobody does.
   const payTakeout = async (paymentMethod: string) => {
     if (cartLines.length === 0 || takeoutPaying) return;
     setTakeoutPaying(true);
@@ -768,6 +790,7 @@ function PointOfSale() {
         name: line.name,
         amount: line.price,
         isKitchen: line.isKitchen,
+        station: line.station,
         visitCredits: line.visitCredits,
         taxRate: line.taxRate,
         note: line.note,
@@ -1059,7 +1082,7 @@ function PointOfSale() {
             {takeoutDone.number}
           </div>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: "#a89a86", marginTop: 14 }}>
-            On the kitchen board now. Give this number to the customer.
+            On the board now. Give this number to the customer.
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 26 }}>
             <button
@@ -1205,7 +1228,8 @@ function PointOfSale() {
             {/* WHERE TO RUN IT. Optional, and only on the guest till — the
                 takeout board above never renders this, because a takeout order
                 is collected at the counter rather than carried anywhere.
-                Only shown when the cart has something the kitchen will cook;
+                Only shown when the cart has something somebody has to make —
+                a drink counts, so a round of beers can still be run to a table;
                 a towel and a bottled water need no table. */}
             {cartLines.some((l) => l.isKitchen) && (
               <div style={{ marginTop: 8 }}>

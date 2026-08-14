@@ -43,6 +43,10 @@ type Locker = { id: number; gender: string; status: string };
 type Order = {
   id: number;
   status: string;
+  // KITCHEN or BAR — which board this ticket is on. Home asks for tickets from
+  // BOTH boards in one request and splits them here, which is why its fetch is
+  // the only one that leaves the ?station= filter off.
+  station: string;
   createdAt: string;
   items: { id: number; name: string; canceled: boolean }[];
   visit: { kind: string; takeoutNumber: number | null; takeoutName: string | null };
@@ -227,7 +231,8 @@ function Home() {
   const menIn = visits.filter((v) => v.customer.gender === "MALE").length;
   const womenIn = visits.length - menIn;
 
-  const kitchenCount = (s: string) => orders.filter((o) => o.status === s).length;
+  const stationCount = (station: string, s: string) =>
+    orders.filter((o) => o.station === station && o.status === s).length;
   // Open takeout orders, oldest first — the same list the kitchen is looking
   // at, filtered down to the ones nobody is sitting in the building waiting for.
   const takeoutOrders = orders
@@ -387,6 +392,16 @@ function Home() {
                       <div style={{ flex: "none", fontSize: 12, fontWeight: 600, color: mins >= 15 ? "#8f3b26" : "#a89a86" }}>
                         {mins} min
                       </div>
+                      {/* WHICH BOARD is making this half. A takeout order of a
+                          burger and a coffee is two tickets, so it shows as TWO
+                          rows here with the same order number — one Kitchen,
+                          one Bar, each with its own stage. That's the point,
+                          not a duplicate: the person handing out the bag needs
+                          to know the food is up and the coffee isn't. Without
+                          this label it just looks like the same order twice. */}
+                      <span style={{ flex: "none", fontSize: 11, fontWeight: 700, color: "#7a6a53", background: "#efe7d9", borderRadius: 20, padding: "5px 10px" }}>
+                        {o.station === "BAR" ? "Bar" : "Kitchen"}
+                      </span>
                       <span style={{ flex: "none", fontSize: 11.5, fontWeight: 800, color: stage.ink, background: stage.bg, borderRadius: 20, padding: "5px 12px" }}>
                         {stage.label}
                       </span>
@@ -429,23 +444,36 @@ function Home() {
             </div>
           </Card>
 
+          {/* Both boards, one under the other. Drawn by looping rather than
+              written out twice, so a change to a tile reaches both rows — and
+              so the bar can't quietly go missing the way the kitchen's numbers
+              would have started under-reporting the moment drinks moved off
+              its board. Same tile colours in both rows, so the eye reads down
+              the columns. */}
           <Card>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={CARD_LABEL}>KITCHEN</div>
-              <Link to="/kitchen" style={{ color: "#8f5340", textDecoration: "none", fontWeight: 700 }}>→</Link>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {[
-                { label: "QUEUE", n: kitchenCount("QUEUED"), bg: "#f3ede2" },
-                { label: "PREP", n: kitchenCount("IN_PROGRESS"), bg: "#f0e4d4" },
-                { label: "READY", n: kitchenCount("READY"), bg: "#e2eadb" },
-              ].map((t) => (
-                <div key={t.label} style={{ flex: 1, background: t.bg, borderRadius: 10, padding: "12px 0", textAlign: "center" }}>
-                  <div style={{ fontSize: 20, fontWeight: 800 }}>{t.n}</div>
-                  <div style={{ fontSize: 10, letterSpacing: ".1em", color: "#8a7f6d", fontWeight: 700 }}>{t.label}</div>
+            {[
+              { id: "KITCHEN", label: "KITCHEN", to: "/kitchen" },
+              { id: "BAR", label: "BAR", to: "/bar" },
+            ].map((st, i) => (
+              <div key={st.id} style={{ marginTop: i === 0 ? 0 : 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={CARD_LABEL}>{st.label}</div>
+                  <Link to={st.to} style={{ color: "#8f5340", textDecoration: "none", fontWeight: 700 }}>→</Link>
                 </div>
-              ))}
-            </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {[
+                    { label: "QUEUE", n: stationCount(st.id, "QUEUED"), bg: "#f3ede2" },
+                    { label: "PREP", n: stationCount(st.id, "IN_PROGRESS"), bg: "#f0e4d4" },
+                    { label: "READY", n: stationCount(st.id, "READY"), bg: "#e2eadb" },
+                  ].map((t) => (
+                    <div key={t.label} style={{ flex: 1, background: t.bg, borderRadius: 10, padding: "12px 0", textAlign: "center" }}>
+                      <div style={{ fontSize: 20, fontWeight: 800 }}>{t.n}</div>
+                      <div style={{ fontSize: 10, letterSpacing: ".1em", color: "#8a7f6d", fontWeight: 700 }}>{t.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </Card>
         </div>
       </div>

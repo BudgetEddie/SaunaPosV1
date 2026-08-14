@@ -317,11 +317,16 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
     (discount ? discount.amount * discount.taxRate : 0);
   const total = subtotal + tax;
 
-  // A charge counts as a kitchen item if the kitchen was ever sent something
-  // by that name on this visit — that's what puts the "Kitchen" chip on the row.
-  const kitchenNames = new Set(
-    visit.orders.flatMap((o) => o.items.filter((i) => !i.canceled).map((i) => i.name))
-  );
+  // WHICH BOARD is making each charge — that's what puts the "Kitchen" or "Bar"
+  // chip on the row. Matched by name, because a bill line and a ticket item
+  // have no id linking them; a menu item lives in one section and a section
+  // goes to one board, so a name only ever points at one of them.
+  const stationByName = new Map<string, string>();
+  for (const o of visit.orders) {
+    for (const i of o.items) {
+      if (!i.canceled) stationByName.set(i.name, o.station);
+    }
+  }
 
   // Remove ONE of a row — void a single mistaken tea from "Tea ×3", not all
   // three. This is why groupBill kept every underlying id: the row on screen
@@ -581,7 +586,7 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
               <div style={{ ...LABEL, fontSize: 13 }}>Bill</div>
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#5f7a5a", animation: "pulseDot 1.8s ease-in-out infinite" }} />
-                <span style={{ fontSize: 12, fontWeight: 600, color: "#a89a86" }}>Kitchen items sync live</span>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "#a89a86" }}>Kitchen and bar items sync live</span>
               </div>
             </div>
 
@@ -603,9 +608,9 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
                 <div>
                   <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 15, fontWeight: 700 }}>{row.description}</span>
-                    {kitchenNames.has(row.description) && (
+                    {stationByName.has(row.description) && (
                       <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: .5, textTransform: "uppercase", color: "#7a6a53", background: "#efe7d9", padding: "2px 7px", borderRadius: 20 }}>
-                        Kitchen
+                        {stationByName.get(row.description) === "BAR" ? "Bar" : "Kitchen"}
                       </span>
                     )}
                     {row.isAdmission && (

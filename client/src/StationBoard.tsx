@@ -1,24 +1,36 @@
 // ============================================================================
-// THE KITCHEN BOARD — the cooks' screen.
+// A TICKET BOARD — the cooks' screen, and the bar's screen.
 //
 // WHAT IT IS
+//   ONE screen used TWICE. main.tsx mounts it at "/kitchen" telling it
+//   station="KITCHEN", and again at "/bar" telling it station="BAR". Same
+//   code, same look; each asks the server only for its own tickets and each
+//   composer offers only its own half of the menu.
+//
+//   That's deliberate, and it's the reason there's no Bar.tsx sitting next to
+//   this file. Two copies of 700 lines means every future tweak has to be made
+//   twice from memory, and the first one that gets missed is the day the two
+//   boards stop matching. One file, two mountings, one place to fix.
+//
 //   Three columns that a ticket moves through left to right:
 //     Queue  →  Prep  →  Ready  →  (gone)
-//   Each card is one guest's order, showing their locker number so it can be
-//   delivered. Tapping the button on a card pushes it to the next column.
+//   Each card is one guest's order for THIS board, showing their locker number
+//   so it can be delivered. Tapping the button pushes it to the next column.
+//   A guest who orders a burger and a beer has two cards — one here, one on
+//   the other board — and each moves at its own pace.
 //
-//   It also has a "New Order" composer, for orders taken at the kitchen
-//   counter rather than at the till. That sends to exactly the same place the
-//   till does, so the charge lands on the guest's tab either way.
+//   It also has a "New Order" composer, for orders taken at the counter rather
+//   than at the till. That sends to exactly the same place the till does, so
+//   the charge lands on the guest's tab either way.
 //
 // WHERE IT'S USED
-//   The "/kitchen" route in client/src/main.tsx. Nothing imports it.
-//   Home.tsx shows a summary of these three columns and links here.
+//   The "/kitchen" and "/bar" routes in client/src/main.tsx. Nothing else
+//   imports it. Home.tsx shows a summary of both boards and links to each.
 //
 // WHAT IT TALKS TO   (all in server/src/index.ts)
-//   GET    /orders/open              → the three columns
+//   GET    /orders/open?station=…    → the three columns, this board's only
 //   GET    /visits/active            → guest search in the composer
-//   GET    /categories               → the menu, filtered to kitchen items
+//   GET    /categories               → the menu, filtered to this board's items
 //   GET    /login-roster             → the "on shift" avatars
 //   POST   /orders/:id/status        → move a ticket to the next column
 //   DELETE /order-items/:id          → dismiss a canceled item
@@ -64,9 +76,33 @@ type RosterEntry = { username: string; displayName: string; role: string };
 type CartLine = { qty: number; note: string; name: string; price: number; taxRate: number; sendsToKitchen: boolean };
 type Cart = Record<number, CartLine>;
 
+// Which board this is. Passed in by main.tsx, once per route.
+export type Station = "KITCHEN" | "BAR";
+
+// Everything that differs between the two boards, in one place — same idea as
+// COLUMNS below. If you find yourself writing `station === "BAR" ? …` anywhere
+// else in this file, it probably belongs up here instead.
+const STATIONS: Record<Station, { title: string; empty: string; noteHint: string }> = {
+  KITCHEN: {
+    title: "Kitchen",
+    empty: "No kitchen sections yet — set a menu section to the kitchen on the Menu page first.",
+    noteHint: "Add a note (temp, allergy, prep…)",
+  },
+  BAR: {
+    title: "Bar",
+    empty: "No bar sections yet — send a menu section to the bar on the Menu page first.",
+    noteHint: "Add a note (no ice, extra lime…)",
+  },
+};
+
 // The board, described as data rather than written out three times. Each entry
 // says which tickets it holds, what its button says, and where that button
 // sends them. The three columns on screen are drawn by looping over this.
+//
+// Both boards use the SAME three words on purpose. "Prep" is a shade odd for
+// pouring a drink, but these three also name the tiles on the Home dashboard
+// and line up with the server's four status words — and a cook covering the
+// bar shouldn't have to learn a second vocabulary for the same screen.
 //
 // "Mark Picked Up" moves a ticket to COMPLETE, which isn't a column — the
 // server stops sending completed orders, so the card simply disappears.
@@ -129,8 +165,10 @@ function groupOrderItems(items: OrderItemRow[]) {
   return Array.from(rows.values());
 }
 
-function Kitchen() {
+function StationBoard({ station }: { station: Station }) {
   const dialog = useDialog();
+  // Everything about this board that isn't the same as the other one.
+  const s = STATIONS[station];
   const [orders, setOrders] = useState<KitchenOrder[]>([]);   // the board
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);          // guests, for the composer
@@ -147,7 +185,11 @@ function Kitchen() {
   // ticket age wants it accurate.
   const [, setTick] = useState(0);
 
-  const loadOrders = () => authFetch(`/orders/open`).then((r) => r.json()).then(setOrders);
+  // Only THIS board's tickets. The server does the filtering rather than the
+  // browser, so a bar terminal in the lounge never holds the whole floor's
+  // guest names, locker numbers and allergy notes just to show four drinks.
+  const loadOrders = () =>
+    authFetch(`/orders/open?station=${station}`).then((r) => r.json()).then(setOrders);
   const loadVisits = () => authFetch(`/visits/active`).then((r) => r.json()).then(setVisits);
   const loadMenu = () => authFetch(`/categories`).then((r) => r.json()).then(setCategories);
 
@@ -158,9 +200,13 @@ function Kitchen() {
     authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
 
     // "orders:changed" is the one that matters here — it fires whenever an
-    // order is rung up at the till, advanced on another kitchen screen, or
-    // cancelled. As everywhere, the message itself is ignored; it just means
-    // "refetch the board".
+    // order is rung up at the till, advanced on another screen, or cancelled.
+    // As everywhere, the message itself is ignored; it just means "refetch the
+    // board". It's one doorbell for both boards, so the kitchen does a wasted
+    // refetch when a drink is poured. That costs one query and is invisible;
+    // per-board doorbells would mean every endpoint that changes a ticket has
+    // to work out which board it belongs to, and the void endpoint can't
+    // easily tell.
     const refresh = () => { loadOrders(); loadVisits(); };
     socket.on("orders:changed", refresh);
     socket.on("visit:checked-in", loadVisits);
@@ -176,10 +222,16 @@ function Kitchen() {
       socket.off("menu:updated", loadMenu);
       clearInterval(timer);
     };
-  }, []);
+    // `station` is listed so that if this screen is ever reached in a way that
+    // swaps the board without rebuilding it from scratch, the fetch above
+    // starts asking for the other one. Today the two routes are separate
+    // elements so React tears one down and builds the other, and this never
+    // fires twice — but leaving it empty would mean a board silently stuck
+    // fetching the station it opened with, with no error to notice.
+  }, [station]);
 
   // Push a ticket one column to the right. The server broadcasts the change,
-  // so every other kitchen screen and the dashboard update too.
+  // so every other board and the dashboard update too.
   const advance = async (order: KitchenOrder, status: string) => {
     await authFetch(`/orders/${order.id}/status`, {
       method: "POST",
@@ -243,6 +295,10 @@ function Kitchen() {
         // to the kitchen. A self-serve drink handed over the counter is a sale,
         // not a ticket the kitchen writes to itself.
         isKitchen: line.sendsToKitchen,
+        // WHICH BOARD it prints on. Always this screen's own — the composer
+        // only ever shows this board's sections, so there's nothing else it
+        // could be.
+        station,
         visitCredits: 0,
         taxRate: line.taxRate,
         note: line.note,
@@ -277,8 +333,13 @@ function Kitchen() {
       ).slice(0, 6)
     : [];
 
-  // Only categories that print a ticket. No point offering towels here.
-  const kitchenCategories = categories.filter((c) => c.isKitchen);
+  // Only sections that print a ticket, AND print it on THIS board. No point
+  // offering towels here, and no point offering the cook a beer.
+  //
+  // Both halves matter. `isKitchen` is still "does this make a ticket at all",
+  // so it's what keeps merchandise out; `station` then picks the board. Keeping
+  // both means a stray station value on a towel section can never leak it here.
+  const stationCategories = categories.filter((c) => c.isKitchen && c.station === station);
   const now = new Date();
 
   return (
@@ -298,7 +359,7 @@ function Kitchen() {
       <div style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 22px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <div>
-            <div style={{ fontSize: 17, fontWeight: 800 }}>Kitchen</div>
+            <div style={{ fontSize: 17, fontWeight: 800 }}>{s.title}</div>
             <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600 }}>
               {now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
               {" · "}
@@ -609,7 +670,7 @@ function Kitchen() {
 
             {/* menu */}
             <div style={{ flex: 1, overflowY: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 20 }}>
-              {kitchenCategories.map((category) => (
+              {stationCategories.map((category) => (
                 <div key={category.id}>
                   <div style={{ ...LABEL, marginBottom: 11 }}>{category.name}</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 11 }}>
@@ -647,7 +708,7 @@ function Kitchen() {
                               <input
                                 className="k-in"
                                 style={{ fontSize: 13 }}
-                                placeholder="Add a note (temp, allergy, prep…)"
+                                placeholder={s.noteHint}
                                 value={line?.note ?? ""}
                                 onChange={(e) => setNote(item.id, e.target.value)}
                               />
@@ -662,9 +723,9 @@ function Kitchen() {
                   </div>
                 </div>
               ))}
-              {kitchenCategories.length === 0 && (
+              {stationCategories.length === 0 && (
                 <div style={{ fontSize: 13.5, fontWeight: 600, color: "#a89a86" }}>
-                  No kitchen categories yet — mark a category as “kitchen” on the Menu page first.
+                  {s.empty}
                 </div>
               )}
             </div>
@@ -694,4 +755,4 @@ function Kitchen() {
   );
 }
 
-export default Kitchen;
+export default StationBoard;

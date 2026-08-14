@@ -95,13 +95,28 @@ enum VisitKind {
   TAKEOUT
 }
 
-// The four stages of a kitchen ticket, in order. The Kitchen screen's three
-// columns are the first three; reaching COMPLETE removes the card.
+// The four stages of a ticket, in order. Each board's three columns are the
+// first three; reaching COMPLETE removes the card.
 enum OrderStatus {
   QUEUED
   IN_PROGRESS
   READY
   COMPLETE
+}
+
+// WHICH BOARD a ticket appears on. A menu section is marked as one or the
+// other, and every ticket it produces goes there and nowhere else — a burger
+// and an orange juice are TWO cards, and neither board shows the other's
+// items. That's the whole point: the cook and the bartender are two people in
+// two places, each wanting a list of only their own work.
+//
+// An enum rather than an `isBar` switch. A switch says "one of two"; the day a
+// third board appears (a juice counter, a spa desk) two switches could both be
+// on and the database couldn't stop it. This can only ever hold one value,
+// which is the fact being recorded.
+enum Station {
+  KITCHEN
+  BAR
 }
 
 // ADMIN can see the takings, edit the menu, void charges and give refunds.
@@ -166,9 +181,25 @@ model Category {
   id          Int        @id @default(autoincrement())
   name        String     @unique // two categories can't share a name
   group       MenuGroup  @default(FOOD_DRINK)
-  // Selling from here prints a kitchen ticket. Set automatically from `group`
-  // by the server — Food & drinks means yes, everything else means no.
+  // Selling from here prints a ticket. Set automatically from `group` by the
+  // server — Food & drinks means yes, everything else means no.
+  //
+  // The NAME is now narrower than the meaning: it answers "does this print a
+  // ticket at all", not "does it go to the kitchen". Which board is the
+  // separate question below. Renaming it would mean dropping and re-adding a
+  // column on a till with real trading history, and every category would come
+  // back as `false` until someone re-saved it by hand — i.e. every ticket in
+  // the building silently stops printing. Not worth a better name.
   isKitchen   Boolean    @default(false)
+  // WHICH BOARD, on the sections that print at all. Chosen by an admin on the
+  // Menu screen. Meaningless, and ignored, on a section that prints nothing —
+  // which is why a towel category carries an inert KITCHEN.
+  //
+  // Defaults to KITCHEN, and that default is what makes every category already
+  // in the database correct without touching a single row: today every ticket
+  // goes to the kitchen, and after this migration every ticket still does,
+  // until somebody deliberately moves a section to the bar.
+  station     Station    @default(KITCHEN)
   // These are entry charges. Picking one at the till REPLACES the guest's
   // existing entry charge rather than adding to their tab.
   isAdmission Boolean    @default(false)
@@ -309,12 +340,23 @@ model Visit {
   orders      Order[] // any number of kitchen tickets
 }
 
-// A kitchen ticket — one card on the Kitchen board.
+// A ticket — one card on the Kitchen board or the Bar board.
 model Order {
   id        Int         @id @default(autoincrement())
   visitId   Int
   visit     Visit       @relation(fields: [visitId], references: [id])
   status    OrderStatus @default(QUEUED)
+  // WHICH BOARD THIS CARD IS ON. Copied off the category when the ticket is
+  // created and then frozen — the same trick BillLineItem.taxRate plays, for
+  // the same reason.
+  //
+  // Frozen matters: an admin moving "Drinks" from the kitchen to the bar
+  // must not yank a tea off the cook's board halfway through making it. The
+  // card stays where it was printed; the NEXT tea goes to the bar.
+  //
+  // Defaults to KITCHEN so every ticket already on the board — including ones
+  // being cooked while the migration runs — stays exactly where it is.
+  station   Station     @default(KITCHEN)
   createdAt DateTime    @default(now()) // drives the "waiting 6 min" clock
   items     OrderItem[]
   // WHERE TO TAKE IT, when the guest is sitting in the lounge rather than
