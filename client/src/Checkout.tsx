@@ -50,6 +50,9 @@ type BillRow = {
   qty: number;
   amount: number;
   isAdmission: boolean;
+  // What these charges cost before staff adjusted the price, or null if
+  // nobody has. Carried through so the row can say "was $6.00".
+  originalAmount: number | null;
   ids: number[];
 };
 
@@ -65,7 +68,11 @@ function groupBill(items: BillLineItem[]): BillRow[] {
     // Charges merge only if the name, the price AND the admission flag all
     // match. Two teas at different prices stay on separate rows, because they
     // were sold at different prices and the bill should say so.
-    const key = `${item.description}|${item.amount}|${item.isAdmission}`;
+    //
+    // The old price is in the key too, so a tea comped down to $0 doesn't fold
+    // in with one that was $0 all along — only one of those two has a story to
+    // tell, and the row has to know which.
+    const key = `${item.description}|${item.amount}|${item.isAdmission}|${item.originalAmount}`;
     const row = rows.get(key);
     if (row) {
       row.qty += 1;
@@ -79,6 +86,7 @@ function groupBill(items: BillLineItem[]): BillRow[] {
         qty: 1,
         amount: item.amount,
         isAdmission: item.isAdmission,
+        originalAmount: item.originalAmount,
         ids: [item.id],
       });
     }
@@ -126,7 +134,9 @@ const MICRO: React.CSSProperties = {
   textTransform: "uppercase",
   color: "#b8ab97",
 };
-const ROW = "1fr 60px 100px 92px";
+// Item · Qty · Amount · the buttons. The last column holds two of them while
+// the screen is in adjusting mode, which is what sets its width.
+const ROW = "1fr 60px 100px 152px";
 
 // The two ways guests can pay at the desk. The database knows about gift cards
 // and visit passes too, but those aren't chosen here — a pass is applied at
@@ -140,7 +150,7 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   const [method, setMethod] = useState("CARD");     // card is the common case
   const [roster, setRoster] = useState<RosterEntry[]>([]);
   const [paid, setPaid] = useState<Paid | null>(null);   // null until money is taken
-  const [voiding, setVoiding] = useState(false);    // are the "Void one" buttons showing
+  const [adjusting, setAdjusting] = useState(false); // are the per-row buttons showing
   const [toast, setToast] = useState<string | null>(null);
 
   // Guards against a double-tap on "Complete Checkout" charging twice. It's
@@ -168,11 +178,59 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   const askOverride = useOverride();
   const dialog = useDialog();
 
-  // Set while a void is mid-flight. The "are you sure?" box is drawn by the app
-  // now rather than by the browser; the browser's version froze everything
-  // until answered, which quietly meant a second tap couldn't land. It can now,
-  // and two taps on one row would void the same charge twice.
-  const voidingOne = useRef(false);
+  // Set while a void or a price change is mid-flight. The boxes are drawn by
+  // the app now rather than by the browser; the browser's version froze
+  // everything until answered, which quietly meant a second tap couldn't land.
+  // It can now, and two taps on one row would void the same charge twice.
+  //
+  // One ref covers both actions on purpose — half-way through changing a price
+  // is no time to also be voting on voiding something.
+  const rowBusy = useRef(false);
+
+  // THE MANAGER'S APPROVAL, held for as long as this screen is open.
+  //
+  // Asked for ONCE, when "Adjust an item" is tapped, rather than again for
+  // every charge. A guest with four things to comp meant a manager standing at
+  // the terminal typing their password four times; now they unlock the bill and
+  // walk away. Same trick Reports and the Menu screen use to open themselves.
+  //
+  // Three possible values, and the middle one is what keeps the call sites
+  // short: a long string means a manager approved it, "" means an admin is
+  // signed in and needs no approval, and null means locked.
+  const [approval, setApproval] = useState<string | null>(isAdmin ? "" : null);
+
+  // The approval only lasts a few minutes on the server. When it lapses
+  // mid-edit the screen locks itself again and says so, rather than silently
+  // refusing every tap from then on.
+  const lapsed = async (res: Response) => {
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 403 && body.needsOverride) {
+      setApproval(isAdmin ? "" : null);
+      setAdjusting(false);
+      await dialog.say("That approval has run out. Tap Adjust an item to ask again.", {
+        title: "Approval expired",
+      });
+      return true;
+    }
+    await dialog.say(body.error, { title: "That didn't work" });
+    return false;
+  };
+
+  // Turning the mode on is where the password is asked for. Turning it off
+  // deliberately KEEPS the approval: a staff member who taps Done and then
+  // spots one more thing shouldn't have to fetch the manager back.
+  const toggleAdjusting = async () => {
+    if (adjusting) {
+      setAdjusting(false);
+      return;
+    }
+    if (approval === null) {
+      const token = await askOverride(`Adjust charges on ${visit.customer.firstName}'s bill`, "PAGE");
+      if (token === null) return; // cancelled — stay locked
+      setApproval(token);
+    }
+    setAdjusting(true);
+  };
 
   useEffect(() => {
     authFetch(`/login-roster`).then((r) => r.json()).then(setRoster);
@@ -272,31 +330,93 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
   // The server refuses in several cases: an already-paid bill, the entry
   // charge, or a pass pack whose passes have already been used.
   const voidOne = async (row: BillRow) => {
-    if (voidingOne.current) return;
+    if (rowBusy.current) return;
     const id = row.ids[row.ids.length - 1]; // the most recently rung-up one
-    voidingOne.current = true;
+    rowBusy.current = true;
     try {
       const yes = await dialog.confirm(
         `Void one "${row.description}" (${money(row.unit)}) from this bill?`,
         { title: "Void a charge", confirmLabel: "Void one", danger: true }
       );
       if (!yes) return;
-      // An admin gets "" straight back and is never prompted. Staff get the
-      // manager's password box; null means it was cancelled.
-      // The label shown here is also what lands in the approval log, so it's
-      // specific on purpose — "Void" tells you nothing three weeks later.
-      const token = await askOverride(`Void "${row.description}" (${money(row.unit)})`);
-      if (token === null) return;
-      const res = await authFetch(`/bills/${visit.bill.id}/line-items/${id}`, { method: "DELETE" }, token);
+      // No password box here any more — the approval was given once, when this
+      // screen was unlocked, and `approval` is it.
+      const res = await authFetch(`/bills/${visit.bill.id}/line-items/${id}`, { method: "DELETE" }, approval);
       if (!res.ok) {
-        const { error } = await res.json();
-        await dialog.say(error, { title: "That didn't work" });
-      } else if (token) {
-        // Only staff see this — an admin's token is "" and needed no approval.
-        showToast(`Approved · voided ${row.description}`);
+        await lapsed(res);
+      } else if (approval) {
+        // Only staff see this — an admin's approval is "" and needed none.
+        showToast(`Voided ${row.description}`);
       }
     } finally {
-      voidingOne.current = false;
+      rowBusy.current = false;
+    }
+  };
+
+  // Change what ONE charge costs — a drink on the house, something knocked
+  // down for a regular. The kind of thing that happens once and doesn't
+  // deserve a discount item set up in advance.
+  //
+  // Like voiding, this works on one charge rather than a whole row: comping
+  // one of three teas leaves the other two at full price, and the row visibly
+  // splits so staff can see what they've done.
+  //
+  // The server keeps the old price, refuses the entry charge, and refuses a
+  // bill that's already been paid — which is why almost nothing is checked
+  // here beyond what the staff member typed.
+  const adjustPrice = async (row: BillRow) => {
+    if (rowBusy.current) return;
+    const id = row.ids[row.ids.length - 1]; // the most recently rung-up one
+    rowBusy.current = true;
+    try {
+      const typed = await dialog.askText(`New price for one "${row.description}"`, {
+        title: "Change a price",
+        initial: row.unit.toFixed(2),
+        placeholder: "0.00",
+        confirmLabel: "Set price",
+        // A number pad rather than letters, since this is only ever a price.
+        inputMode: "decimal",
+      });
+      // null is Cancel. "" is the box left empty and Save pressed — a real
+      // answer everywhere else in the app, but not a price, so it's turned
+      // away separately rather than lumped in with cancelling.
+      if (typed === null) return;
+      // Rounded to whole cents. Without this a slip of the finger — "19.1023"
+      // — is stored exactly as typed, shows as $19.10 everywhere because every
+      // screen formats to two places, and quietly throws the tax and the total
+      // out by a fraction of a cent that nobody can see or explain.
+      const raw = Number(typed.trim());
+      const next = Math.round(raw * 100) / 100;
+      if (typed.trim() === "" || !Number.isFinite(raw)) {
+        await dialog.say("Type a price, like 0 or 4.50.", { title: "That's not a price" });
+        return;
+      }
+      if (raw < 0) {
+        await dialog.say("A price can't be less than zero.", { title: "That's not a price" });
+        return;
+      }
+      // Nothing to do.
+      if (next === row.unit) return;
+
+      // The manager approved unlocking this bill, not this particular price —
+      // which is the trade for not making them stand here for every charge.
+      const res = await authFetch(
+        `/bills/${visit.bill.id}/line-items/${id}/price`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount: next }),
+        },
+        approval
+      );
+      if (!res.ok) {
+        await lapsed(res);
+      } else if (approval) {
+        // Only staff see this — an admin's approval is "" and needed none.
+        showToast(`${row.description} now ${money(next)}`);
+      }
+    } finally {
+      rowBusy.current = false;
     }
   };
 
@@ -497,18 +617,35 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
                   <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600, marginTop: 2 }}>{money(row.unit)} each</div>
                 </div>
                 <div style={{ textAlign: "center", fontSize: 15, fontWeight: 700, color: "#6b6152" }}>{row.qty}</div>
-                <div style={{ textAlign: "right", fontSize: 15, fontWeight: 700 }}>{money(row.amount)}</div>
-                {/* The void button only exists while voiding mode is on, and
-                    never on the entry charge — that's swapped on the order
-                    screen, not deleted. */}
                 <div style={{ textAlign: "right" }}>
-                  {voiding && !row.isAdmission && (
-                    <button
-                      onClick={() => voidOne(row)}
-                      style={{ padding: "5px 11px", border: "1.5px solid #e0bfb2", borderRadius: 9, background: "#fffdf9", color: "#8f3f28", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
-                    >
-                      Void one
-                    </button>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>{money(row.amount)}</div>
+                  {/* Only a charge somebody changed carries this. Without it a
+                      comped drink looks exactly like one that was always free. */}
+                  {row.originalAmount !== null && (
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: "#8f5340", marginTop: 2 }}>
+                      was {money(row.originalAmount * row.qty)}
+                    </div>
+                  )}
+                </div>
+                {/* Both buttons appear together while adjusting mode is on, and
+                    never on the entry charge — that's swapped on the order
+                    screen rather than edited or deleted here. */}
+                <div style={{ textAlign: "right", display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                  {adjusting && !row.isAdmission && (
+                    <>
+                      <button
+                        onClick={() => adjustPrice(row)}
+                        style={{ padding: "5px 11px", border: "1.5px solid #d8cebc", borderRadius: 9, background: "#fffdf9", color: "#7a6a53", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        Price
+                      </button>
+                      <button
+                        onClick={() => voidOne(row)}
+                        style={{ padding: "5px 11px", border: "1.5px solid #e0bfb2", borderRadius: 9, background: "#fffdf9", color: "#8f3f28", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        Void
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -596,21 +733,23 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
             <div style={{ ...PANEL, padding: 18 }}>
               <div style={{ ...LABEL, marginBottom: 12 }}>Adjustments</div>
               <button
-                onClick={() => setVoiding((v) => !v)}
-                style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 13, borderRadius: 11, border: `1.5px solid ${voiding ? "#8f3f28" : "#d8cebc"}`, background: "#fffdf9", color: voiding ? "#8f3f28" : "#6b6152", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
+                onClick={toggleAdjusting}
+                style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 13, borderRadius: 11, border: `1.5px solid ${adjusting ? "#8f3f28" : "#d8cebc"}`, background: "#fffdf9", color: adjusting ? "#8f3f28" : "#6b6152", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}
               >
                 <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                  <rect x="2.5" y="6" width="8" height="5.5" rx="1.3" stroke={voiding ? "#8f3f28" : "#a89a86"} strokeWidth="1.5" />
-                  <path d="M4.2 6V4.3a2.3 2.3 0 014.6 0V6" stroke={voiding ? "#8f3f28" : "#a89a86"} strokeWidth="1.5" />
+                  <rect x="2.5" y="6" width="8" height="5.5" rx="1.3" stroke={adjusting ? "#8f3f28" : "#a89a86"} strokeWidth="1.5" />
+                  <path d="M4.2 6V4.3a2.3 2.3 0 014.6 0V6" stroke={adjusting ? "#8f3f28" : "#a89a86"} strokeWidth="1.5" />
                 </svg>
-                {voiding ? "Done voiding" : "Void an item"}
+                {adjusting ? "Done adjusting" : "Adjust an item"}
               </button>
               <div style={{ fontSize: 11.5, color: "#b8ab97", fontWeight: 600, marginTop: 10, textAlign: "center" }}>
-                {voiding
-                  ? "Pick a row to remove one of"
-                  : isAdmin
-                    ? "Refunds live on Reports"
-                    : "Needs a manager's approval · refunds live on Reports"}
+                {adjusting
+                  ? approval
+                    ? "Approved · change prices or remove charges freely"
+                    : "Pick a row to change its price or remove one"
+                  : isAdmin || approval
+                    ? "Change a price or void a charge · refunds live on Reports"
+                    : "A manager's password unlocks this bill once · refunds live on Reports"}
               </div>
             </div>
 

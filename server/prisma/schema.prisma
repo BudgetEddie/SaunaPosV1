@@ -380,6 +380,21 @@ model BillLineItem {
   // old receipt. It's also what kitchen items are matched against by name.
   description         String
   amount              Float // before tax
+  // WHAT IT COST BEFORE STAFF CHANGED IT. Null on almost every charge — it's
+  // only filled in when someone adjusts a price at checkout, comping a drink
+  // or knocking something down for a regular.
+  //
+  // Two rules keep it honest, both enforced in the price-override endpoint:
+  //   - written only the FIRST time a charge is adjusted, so $6 → $3 → $1
+  //     still remembers $6 rather than drifting to $3
+  //   - cleared again if the price is put back to what it was, so an undo
+  //     leaves no trace of a change that no longer exists
+  //
+  // Nothing computes money from this. It exists so "what did we give away"
+  // has an answer, and so the Checkout screen can show "was $6.00" — without
+  // it an adjusted charge is indistinguishable from one that was always
+  // priced that way, and an admin's comp leaves no record anywhere at all.
+  originalAmount      Float?
   // THE RATE THAT ACTUALLY COUNTS. Frozen here at the moment of sale, so a
   // receipt always shows the tax charged on the day. Note the default is 0,
   // not 0.13 — anything saved without a rate sells tax-free.

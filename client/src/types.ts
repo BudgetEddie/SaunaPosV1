@@ -90,6 +90,10 @@ export type BillLineItem = {
   amount: number;
   taxRate: number;
   isAdmission: boolean;
+  // What this charge cost before staff adjusted it at checkout. Null on
+  // almost everything — only a comped or discounted charge carries one, and
+  // it's what puts the "was $6.00" note on the Checkout screen.
+  originalAmount: number | null;
 };
 
 // A guest's whole tab for one stay. The `taxRate` here is the house rate as it

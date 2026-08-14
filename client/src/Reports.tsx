@@ -337,7 +337,11 @@ function Reports() {
   const effectiveTax = report && report.subtotal > 0 ? `${((report.tax / report.subtotal) * 100).toFixed(2)}%` : "—";
   // The best seller's revenue, used as the full-width mark for the bars in the
   // best-sellers list. Falls back to 1 so nothing divides by zero.
-  const maxRevenue = report && report.topItems.length > 0 ? report.topItems[0].revenue : 1;
+  // The longest bar in Best Sellers, which every other bar is measured against.
+  // The `|| 1` is load-bearing: on a day where everything sold was comped to
+  // $0 the top seller's revenue IS zero, and dividing by it would set every
+  // bar to a width of "NaN%" — no error, the bars just silently vanish.
+  const maxRevenue = (report && report.topItems.length > 0 ? report.topItems[0].revenue : 1) || 1;
 
   return (
     <div style={{ background: "#f4efe7", minHeight: "100vh" }}>

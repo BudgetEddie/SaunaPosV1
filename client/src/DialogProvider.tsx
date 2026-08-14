@@ -62,12 +62,22 @@ type Request = {
   placeholder: string;
   confirmLabel: string;
   danger: boolean;
+  // Which on-screen keyboard a tablet should offer. "decimal" gets a number
+  // pad — what you want when the answer is a price. The answer still comes
+  // back as text either way; this only changes the keys, never the value.
+  inputMode: "text" | "decimal";
   resolve: (answer: Answer) => void;
 };
 
 type SayOptions = { title?: string };
 type ConfirmOptions = { title?: string; confirmLabel?: string; danger?: boolean };
-type AskOptions = { title?: string; initial?: string; placeholder?: string; confirmLabel?: string };
+type AskOptions = {
+  title?: string;
+  initial?: string;
+  placeholder?: string;
+  confirmLabel?: string;
+  inputMode?: "text" | "decimal";
+};
 
 type Dialog = {
   say: (message: string, options?: SayOptions) => Promise<void>;
@@ -141,6 +151,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         placeholder: "",
         confirmLabel: "OK",
         danger: false,
+        inputMode: "text",
       }).then(() => undefined),
 
     confirm: (question, options = {}) =>
@@ -152,6 +163,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         placeholder: "",
         confirmLabel: options.confirmLabel ?? "OK",
         danger: options.danger ?? false,
+        inputMode: "text",
       }).then((answer) => answer === true),
 
     askText: (question, options = {}) =>
@@ -163,6 +175,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         placeholder: options.placeholder ?? "",
         confirmLabel: options.confirmLabel ?? "Save",
         danger: false,
+        inputMode: options.inputMode ?? "text",
       }).then((answer) => (typeof answer === "string" ? answer : null)),
   };
 
@@ -204,6 +217,11 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 className="dlg-in"
                 autoFocus
                 autoComplete="off"
+                // Only changes which keyboard a tablet pops up. Deliberately
+                // NOT type="number", which would let the browser reject or
+                // silently blank what was typed — the caller wants the raw
+                // text so it can say something useful about a bad price.
+                inputMode={current.inputMode}
                 defaultValue={current.initial}
                 placeholder={current.placeholder}
                 // Everything selected on arrival, so typing replaces the old

@@ -1598,6 +1598,102 @@ app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, re
   res.json({ ok: true });
 });
 
+// ---------------------------------------------------------------------------
+// CHANGE WHAT ONE CHARGE COSTS on an unpaid bill — admin only.
+//
+// The "Price" button next to a row on the Checkout screen. A drink on the
+// house, something knocked down for a regular — the sort of thing that happens
+// once and doesn't deserve a whole discount item set up in advance.
+//
+// ⚠️ THIS IS THE ONE PLACE A CHARGE'S PRICE CHANGES AFTER IT WAS RUNG UP.
+//    Everywhere else in this app a charge is written once and never touched:
+//    the name, price and tax rate are COPIED from the menu at the moment of
+//    sale precisely so that editing the menu can never rewrite an old receipt.
+//    This endpoint puts a deliberate hole in that. Everything below is about
+//    keeping the hole small.
+//
+// requireAdmin for the same reason voiding has it: a staff member deciding on
+// their own to make things free is exactly what it guards against. The label
+// the browser sends to the approval prompt names the item and both prices, so
+// the log says what was actually given away.
+//
+// It UPDATES the row rather than deleting and re-creating it, and that matters
+// in three ways that are easy to miss:
+//   - the kitchen is left alone. Voiding cancels the matching ticket item; a
+//     comped drink is still being made, it just costs nothing now.
+//   - `visitCreditsGranted` survives, so comping a pass pack doesn't silently
+//     strip the passes it granted (the guest keeps them — see below).
+//   - the id and createdAt survive, so the charge stays where it was on the
+//     receipt, which is ordered by createdAt.
+// ---------------------------------------------------------------------------
+app.put("/bills/:billId/line-items/:lineItemId/price", requireAdmin, async (req, res) => {
+  const billId = Number(req.params.billId);
+  const lineItemId = Number(req.params.lineItemId);
+  const { amount } = req.body;
+
+  // The browser picks this number, unlike the discount endpoint where the
+  // server works it out. That's unavoidable for a free-form price — so the
+  // guard is that a manager approved a prompt naming this exact figure.
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+    return res.status(400).json({ error: "A price has to be a number, and can't be less than zero" });
+  }
+  // Money is whole cents. A price arriving as 19.1023 — a slip of the finger,
+  // or a browser that skipped its own rounding — would otherwise be stored
+  // exactly as sent, print as $19.10 on every screen because they all format
+  // to two places, and leave the tax and the total wrong by a fraction of a
+  // cent that nobody can see, reconcile, or explain.
+  const cents = Math.round(amount * 100) / 100;
+
+  const lineItem = await prisma.billLineItem.findUnique({
+    where: { id: lineItemId },
+    include: { bill: true },
+  });
+  if (!lineItem || lineItem.billId !== billId) {
+    return res.status(404).json({ error: "Line item not found" });
+  }
+  // The same rule that stops a charge being voided after payment, and it
+  // matters more here than it looks. No bill stores its own total — every
+  // figure on the Reports screen, the cash/card split, a customer's lifetime
+  // spend and even the amount of a refund given weeks ago are all added up
+  // from these rows on demand. Editing a paid bill would quietly rewrite
+  // numbers a manager has already counted and written down.
+  if (lineItem.bill.paidAt) {
+    return res.status(400).json({ error: "This bill is already paid — use a refund instead" });
+  }
+  // The entry charge is changed by picking a different admission type at the
+  // till, not here. Two reasons: re-tapping an admission tile deletes the
+  // entry line and rebuilds it at the menu price, which would wipe an
+  // adjustment without saying so; and the cash discount decides whether it
+  // applies by comparing this exact figure against the house minimum.
+  if (lineItem.isAdmission) {
+    return res.status(400).json({ error: "Change the entry charge by picking a different admission type" });
+  }
+
+  // WHAT IT USED TO COST, remembered once. Adjusting the same charge again
+  // keeps the first figure rather than the most recent one, so $6 → $3 → $1
+  // still says it started at $6.
+  //
+  // And put back exactly, it forgets: setting a comped drink back to $6.00
+  // clears the note entirely rather than leaving "was $6.00" on a charge that
+  // now costs $6.00.
+  const wasEverAdjusted = lineItem.originalAmount !== null;
+  const trueOriginal = wasEverAdjusted ? lineItem.originalAmount : lineItem.amount;
+  const backToNormal = cents === trueOriginal;
+
+  const updated = await prisma.billLineItem.update({
+    where: { id: lineItemId },
+    data: {
+      amount: cents,
+      originalAmount: backToNormal ? null : trueOriginal,
+    },
+  });
+
+  // Same shout every other charge makes. Nothing else needs telling: the food
+  // is unaffected, and no passes changed hands.
+  io.emit("bill:line-item-added", { billId });
+  res.json(updated);
+});
+
 // Refund a PAID bill in full — admin only. Stamps it; never deletes.
 //
 // That's the important part: a refunded bill keeps every charge and gains a
