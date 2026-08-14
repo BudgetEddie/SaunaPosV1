@@ -100,11 +100,13 @@ function Shell() {
           <NavLink to="/menu" className="side-link">Menu</NavLink>
           <div
             onClick={() => { const next = !sound; setSound(next); setSoundEnabled(next); }}
-            title={sound ? "Turn the tap sound off" : "Turn the tap sound on"}
+            title={sound ? "Turn the app's sounds off" : "Turn the app's sounds on"}
             style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 18px 0", padding: "7px 0", fontSize: 12, fontWeight: 600, color: sound ? "rgba(244,239,231,.75)" : "rgba(244,239,231,.4)", cursor: "pointer" }}
           >
             <span style={{ fontSize: 13 }}>{sound ? "🔊" : "🔇"}</span>
-            {sound ? "Tap sound on" : "Tap sound off"}
+            {/* "Sound", not "Tap sound" — this switch also silences the chime
+                that plays when a guest is checked out. */}
+            {sound ? "Sound on" : "Sound off"}
           </div>
           <div style={{ padding: "12px 18px 6px", fontSize: 12, color: "rgba(244,239,231,.55)" }}>
             {user.displayName} · {isAdmin ? "admin" : "staff"}

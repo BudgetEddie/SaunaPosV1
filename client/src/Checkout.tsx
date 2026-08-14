@@ -32,6 +32,7 @@ import { useEffect, useRef, useState } from "react";
 import { authFetch } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
 import { useDialog } from "./DialogProvider.tsx";
+import { playCheckoutChime } from "./clickSound.ts";
 import { type BillLineItem, type Visit } from "./types.ts";
 
 type RosterEntry = { username: string; displayName: string; role: string };
@@ -455,6 +456,10 @@ function Checkout({ visit, onBack, onDone }: { visit: Visit; onBack: () => void;
     const chargedTotal = charged
       ? charged.reduce((sum, i) => sum + i.amount + i.amount * i.taxRate, 0)
       : total;
+    // The money is in. Sounded here rather than from an effect watching the
+    // card, so it fires once on the actual event — an effect would also run on
+    // React's development double-render and chime twice.
+    playCheckoutChime();
     // Paid. Freeze a copy of everything the confirmation screen needs, because
     // this guest is about to vanish from the live list of active visits.
     setPaid({

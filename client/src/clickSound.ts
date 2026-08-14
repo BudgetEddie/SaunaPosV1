@@ -1,5 +1,6 @@
 // ============================================================================
-// THE CLICK SOUND — a small tick when staff tap something.
+// THE APP'S SOUNDS — a tick when staff tap something, and a chime when a
+// guest is checked out.
 //
 // WHAT IT IS
 //   One listener, attached once when the app starts, that plays a short click
@@ -7,9 +8,17 @@
 //   screens: there are hundreds of tappable things across the app and adding a
 //   line to each would be a permanent tax on every future change.
 //
+//   The checkout chime is the exception, and deliberately so: it marks one
+//   specific moment — the money is taken, the visit is closed — so it's called
+//   by hand from that one place rather than inferred from a tap.
+//
 // WHERE IT'S USED
 //   start() is called once from client/src/main.tsx.
+//   playCheckoutChime() is called from Checkout.tsx when the paid card appears.
 //   Shell.tsx reads and flips the on/off switch in the sidebar.
+//
+// ONE SWITCH COVERS BOTH. The sidebar toggle silences the whole app rather
+// than just the tapping — a room that wants quiet wants it for all of it.
 //
 // WHAT COUNTS AS TAPPABLE
 //   Most clickable things in this app are plain <div>s with an onClick — the
@@ -51,6 +60,26 @@ function play() {
   audio.play().catch(() => {});
 }
 
+// THE CHECKOUT CHIME. A guest is paid up and on their way out — this is the
+// one sound in the app that means something happened rather than that a finger
+// landed somewhere.
+//
+// Louder than the click on purpose. The tick plays hundreds of times a shift so
+// it has to stay out of the way; this plays a few dozen times and wants to be
+// heard across a busy front desk.
+const CHIME_VOLUME = 0.7;
+let chime: HTMLAudioElement | null = null;
+
+export function playCheckoutChime() {
+  if (!soundEnabled() || !chime) return;
+  // Rewound rather than played fresh, so a second checkout close on the heels
+  // of the first restarts the sound instead of layering two on top of it.
+  chime.currentTime = 0;
+  // Same swallowed rejection as the click. A browser that refuses to play it
+  // has cost us a flourish, not a checkout.
+  chime.play().catch(() => {});
+}
+
 // Is this element (or something it sits inside) meant to be tapped?
 //
 // Walks up a few levels because a tap usually lands on the text or the icon
@@ -86,6 +115,14 @@ export function start() {
     a.preload = "auto";
     return a;
   });
+
+  // Just the one, unlike the click's four. Two checkouts finishing in the same
+  // second isn't a thing that happens at a front desk with one till.
+  chime = new Audio("/sounds/checkout.mp3");
+  chime.volume = CHIME_VOLUME;
+  // Loaded up front so the first checkout of the day chimes on time rather
+  // than a beat late while the file is still being fetched.
+  chime.preload = "auto";
 
   // Capture phase, so the sound fires even if something further down stops the
   // event from bubbling — a few of the overlays do exactly that.
