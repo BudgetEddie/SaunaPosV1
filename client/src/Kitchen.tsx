@@ -282,9 +282,20 @@ function Kitchen() {
   const now = new Date();
 
   return (
-    <div style={{ background: "#f4efe7", minHeight: "100vh", position: "relative" }}>
-      {/* header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 26px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
+    // THE BOARD FILLS THE SCREEN, exactly once. The page itself never scrolls;
+    // only the inside of a column does. That's what lets the columns grow to
+    // whatever height the screen has instead of stopping at a fixed size and
+    // leaving the bottom of a wall-mounted monitor empty.
+    //
+    // The three parts below — header, board, columns — each need their share of
+    // this: `flex: none` on the header keeps it its natural size, `flex: 1` and
+    // `minHeight: 0` on the board let it take everything left over. Without the
+    // minHeight a flex child refuses to shrink below its contents, which is the
+    // usual reason a layout like this scrolls the whole page instead.
+    <div style={{ background: "#f4efe7", height: "100vh", overflow: "hidden", position: "relative", display: "flex", flexDirection: "column" }}>
+      {/* header — trimmed a little, since every pixel here is one the cooks
+          don't get for tickets. */}
+      <div style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 22px", background: "#fffdf9", borderBottom: "1px solid rgba(43,38,32,.07)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <div>
             <div style={{ fontSize: 17, fontWeight: 800 }}>Kitchen</div>
@@ -332,15 +343,25 @@ function Kitchen() {
       {/* board */}
       {/* The three columns, drawn by looping over COLUMNS. Each one filters the
           same list of orders down to the ones at its stage. */}
-      <div style={{ padding: "22px 26px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 18, alignItems: "start" }}>
+      <div style={{ flex: 1, minHeight: 0, padding: "14px 22px 18px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, alignItems: "stretch" }}>
         {COLUMNS.map((col) => {
           const cards = orders.filter((o) => o.status === col.status);
+          // A BUSY COLUMN GOES TWO CARDS WIDE. During a rush nearly everything
+          // piles into Queue while Prep and Ready sit empty, so the one column
+          // that matters was being squeezed into a third of the screen.
+          //
+          // `auto-fill` with a minimum width is what makes this safe: two cards
+          // appear only where there's genuinely room for both, so a narrower
+          // screen quietly stays one-up rather than crushing them. Below the
+          // threshold it stays one-up too — a quiet board shouldn't have its
+          // cards shrink for no reason.
+          const twoUp = cards.length >= 5;
           return (
-            <div key={col.status} style={{ background: "#efe9df", border: "1px solid rgba(43,38,32,.06)", borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", gap: 12, minHeight: 520 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 4px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                  <div style={{ width: 9, height: 9, borderRadius: "50%", background: col.dot }} />
-                  <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1.8, textTransform: "uppercase", color: "#6b6152" }}>
+            <div key={col.status} style={{ background: "#efe9df", border: "1px solid rgba(43,38,32,.06)", borderRadius: 16, padding: 10, display: "flex", flexDirection: "column", gap: 9, minHeight: 0 }}>
+              <div style={{ flex: "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 3px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: col.dot }} />
+                  <span style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: 1.6, textTransform: "uppercase", color: "#6b6152" }}>
                     {col.label}
                   </span>
                 </div>
@@ -349,7 +370,20 @@ function Kitchen() {
                 </div>
               </div>
 
-              <div className="k-col" style={{ display: "flex", flexDirection: "column", gap: 11, overflowY: "auto", maxHeight: 560 }}>
+              <div
+                className="k-col"
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: "auto",
+                  display: "grid",
+                  gridTemplateColumns: twoUp ? "repeat(auto-fill, minmax(190px, 1fr))" : "1fr",
+                  // alignContent so cards keep their own heights and stack from
+                  // the top; without it a grid stretches its rows to fill.
+                  alignContent: "start",
+                  gap: 9,
+                }}
+              >
                 {cards.map((order) => {
                   // How long this ticket has been waiting. Past 15 minutes the
                   // badge turns red — a nudge, not a rule.
@@ -368,67 +402,72 @@ function Kitchen() {
                   // it has to go in the item's note box or it won't be seen.
                   const notes = order.visit.customer?.notes ?? null;
                   return (
-                    <div key={order.id} style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 14, padding: 15, boxShadow: "0 1px 2px rgba(43,38,32,.04)" }}>
-                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+                    // The card's SPACING is what got tightened, not its type.
+                    // What a cook reads across the room — the dish and how many
+                    // — is the same size it always was; the padding, margins
+                    // and the button around it are what shrank.
+                    <div key={order.id} style={{ background: "#fffdf9", border: "1px solid rgba(43,38,32,.08)", borderRadius: 12, padding: "10px 11px", boxShadow: "0 1px 2px rgba(43,38,32,.04)", minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 7 }}>
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                            <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.2 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <div style={{ fontSize: 14, fontWeight: 800, lineHeight: 1.15 }}>
                               {ticketName(order.visit)}
                             </div>
                             {/* The cook needs to know at a glance that this one
                                 goes in a bag on the counter, not out to a bench. */}
                             {order.visit.kind === "TAKEOUT" && (
-                              <span style={{ flex: "none", fontSize: 9.5, fontWeight: 800, letterSpacing: 1, color: "#8f5340", background: "#f4e6dd", borderRadius: 20, padding: "2px 8px" }}>
+                              <span style={{ flex: "none", fontSize: 9, fontWeight: 800, letterSpacing: .8, color: "#8f5340", background: "#f4e6dd", borderRadius: 20, padding: "1px 6px" }}>
                                 TAKEOUT
                               </span>
                             )}
                           </div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 3 }}>
-                            <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                              <path d="M5.5 1C3.6 1 2 2.5 2 4.4c0 2.4 3.5 5.6 3.5 5.6S9 6.8 9 4.4C9 2.5 7.4 1 5.5 1z" stroke="#a89a86" strokeWidth="1.3" />
-                              <circle cx="5.5" cy="4.3" r="1.1" fill="#a89a86" />
-                            </svg>
-                            <span style={{ fontSize: 12, fontWeight: 700, color: "#7a6a53" }}>{ticketTag(order)}</span>
+                          {/* Where it's going. Dropped to a plain line without
+                              its pin icon — at two cards wide the icon cost
+                              more room than it earned. */}
+                          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#7a6a53", marginTop: 1 }}>
+                            {ticketTag(order)}
                           </div>
                         </div>
-                        <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, color: late ? "#8f3f28" : "#a89a86", background: late ? "#f7e4dc" : "#f0ebe1", padding: "4px 9px", borderRadius: 20 }}>
-                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                            <circle cx="5" cy="5" r="4" stroke="currentColor" strokeWidth="1.3" />
-                            <path d="M5 2.6V5l1.6 1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                          </svg>
-                          {mins} min
+                        {/* The waiting badge loses its clock face and keeps the
+                            number, which is the part anyone actually reads —
+                            and it still turns red past fifteen minutes. */}
+                        <div style={{ flex: "none", fontSize: 10.5, fontWeight: 800, color: late ? "#8f3f28" : "#a89a86", background: late ? "#f7e4dc" : "#f0ebe1", padding: "2px 7px", borderRadius: 20 }}>
+                          {mins}m
                         </div>
                       </div>
 
-                      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 7 }}>
+                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
                         {groupOrderItems(active).map((row) => (
                           <div key={row.key}>
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                              <span style={{ flex: "none", minWidth: 22, fontSize: 14, fontWeight: 800, color: "#7a6a53" }}>
+                            {/* LEFT AT FULL SIZE ON PURPOSE. Everything else on
+                                this card gave up room; the dish and the count
+                                did not. */}
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
+                              <span style={{ flex: "none", minWidth: 20, fontSize: 14, fontWeight: 800, color: "#7a6a53" }}>
                                 {row.count}×
                               </span>
-                              <span style={{ fontSize: 14, fontWeight: 600 }}>{row.name}</span>
+                              <span style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.25 }}>{row.name}</span>
                             </div>
                             {row.note && (
-                              <div style={{ fontSize: 12, color: "#a89a86", fontWeight: 600, marginLeft: 30 }}>{row.note}</div>
+                              <div style={{ fontSize: 11.5, color: "#a89a86", fontWeight: 600, marginLeft: 27, lineHeight: 1.3 }}>{row.note}</div>
                             )}
                           </div>
                         ))}
                       </div>
 
                       {canceled.length > 0 && (
-                        <div style={{ marginTop: 11, background: "#f7e4dc", borderRadius: 10, padding: "9px 11px" }}>
-                          <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", color: "#8f3f28", marginBottom: 6 }}>
+                        <div style={{ marginTop: 8, background: "#f7e4dc", borderRadius: 9, padding: "7px 9px" }}>
+                          <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: .8, textTransform: "uppercase", color: "#8f3f28", marginBottom: 4 }}>
                             Order canceled
                           </div>
                           {canceled.map((item) => (
-                            <div key={item.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 4 }}>
-                              <span style={{ fontSize: 13, fontWeight: 600, color: "#8f3f28", textDecoration: "line-through" }}>
+                            <div key={item.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 7, marginTop: 3 }}>
+                              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#8f3f28", textDecoration: "line-through", minWidth: 0 }}>
                                 {item.name}
                               </span>
                               <button
                                 onClick={() => dismissCanceled(item.id)}
-                                style={{ padding: "3px 10px", border: "1.5px solid #e8c3b4", borderRadius: 8, background: "#fffdf9", color: "#8f3f28", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}
+                                style={{ flex: "none", padding: "2px 8px", border: "1.5px solid #e8c3b4", borderRadius: 8, background: "#fffdf9", color: "#8f3f28", fontFamily: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
                               >
                                 Remove
                               </button>
@@ -437,9 +476,13 @@ function Kitchen() {
                         </div>
                       )}
 
+                      {/* The allergy warning. Untouched — it's the one thing on
+                          this card where missing it actually hurts somebody, so
+                          it keeps its size and its red while everything around
+                          it gave up room. */}
                       {notes && (
-                        <div style={{ marginTop: 11, display: "flex", flexWrap: "wrap", gap: 7 }}>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: "#8f3f28", background: "#f7e4dc", padding: "4px 10px", borderRadius: 20 }}>
+                        <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#8f3f28", background: "#f7e4dc", padding: "4px 10px", borderRadius: 20, lineHeight: 1.35 }}>
                             {notes.length > 40 ? `${notes.slice(0, 40)}…` : notes}
                           </span>
                         </div>
@@ -451,7 +494,7 @@ function Kitchen() {
                       {active.length > 0 && (
                         <button
                           onClick={() => advance(order, col.next)}
-                          style={{ marginTop: 13, width: "100%", padding: 11, border: col.border, borderRadius: 11, background: col.bg, color: col.ink, fontFamily: "inherit", fontSize: 13.5, fontWeight: 800, cursor: "pointer" }}
+                          style={{ marginTop: 9, width: "100%", padding: "7px 8px", border: col.border, borderRadius: 9, background: col.bg, color: col.ink, fontFamily: "inherit", fontSize: 12.5, fontWeight: 800, cursor: "pointer" }}
                         >
                           {col.action}
                         </button>
@@ -461,7 +504,9 @@ function Kitchen() {
                 })}
 
                 {cards.length === 0 && (
-                  <div style={{ textAlign: "center", padding: "26px 10px", fontSize: 13, fontWeight: 600, color: "#b8ab97" }}>
+                  // gridColumn 1/-1 so this sits across the whole column rather
+                  // than squeezing into one half of a two-up grid.
+                  <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: "22px 10px", fontSize: 13, fontWeight: 600, color: "#b8ab97" }}>
                     Nothing here right now
                   </div>
                 )}
