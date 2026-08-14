@@ -36,6 +36,7 @@ import {
   type FormEvent,
 } from "react";
 import { authFetch } from "./authFetch.ts";
+import { playErrorSound } from "./clickSound.ts";
 
 type Scope = "ACTION" | "PAGE";
 
@@ -113,6 +114,7 @@ export function OverrideProvider({ children }: { children: ReactNode }) {
       // Stay open so they can try again — the server refuses a wrong password
       // with 403, deliberately not 401, because authFetch treats 401 as "your
       // session died" and reloads the whole page.
+      playErrorSound();
       setStatus(body.error ?? "That didn't work");
       setPassword("");
       setBusy(false);

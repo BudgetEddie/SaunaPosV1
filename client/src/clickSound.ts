@@ -1,6 +1,6 @@
 // ============================================================================
-// THE APP'S SOUNDS — a tick when staff tap something, and a chime when a
-// guest is checked out.
+// THE APP'S SOUNDS — a tick when staff tap something, a chime when a guest is
+// checked out, and a short buzz when the app says no to something.
 //
 // WHAT IT IS
 //   One listener, attached once when the app starts, that plays a short click
@@ -8,17 +8,22 @@
 //   screens: there are hundreds of tappable things across the app and adding a
 //   line to each would be a permanent tax on every future change.
 //
-//   The checkout chime is the exception, and deliberately so: it marks one
-//   specific moment — the money is taken, the visit is closed — so it's called
-//   by hand from that one place rather than inferred from a tap.
+//   The chime and the error buzz are both exceptions, and deliberately so:
+//   each marks one specific kind of moment rather than every tap, so each is
+//   called by hand from the place that actually knows it happened.
 //
 // WHERE IT'S USED
 //   start() is called once from client/src/main.tsx.
 //   playCheckoutChime() is called from Checkout.tsx when the paid card appears.
+//   playErrorSound() is called from DialogProvider.tsx, for every message box
+//     that isn't just good news, and from OverrideProvider.tsx when a manager's
+//     password is refused. Between those two, nothing else in the app needs to
+//     call it directly — nearly every "you can't do that" already flows through
+//     one or the other.
 //   Shell.tsx reads and flips the on/off switch in the sidebar.
 //
-// ONE SWITCH COVERS BOTH. The sidebar toggle silences the whole app rather
-// than just the tapping — a room that wants quiet wants it for all of it.
+// ONE SWITCH COVERS ALL THREE. The sidebar toggle silences the whole app
+// rather than just the tapping — a room that wants quiet wants it for all of it.
 //
 // WHAT COUNTS AS TAPPABLE
 //   Most clickable things in this app are plain <div>s with an onClick — the
@@ -80,6 +85,25 @@ export function playCheckoutChime() {
   chime.play().catch(() => {});
 }
 
+// THE ERROR BUZZ. Short and flat on purpose — the opposite shape of the
+// checkout chime, so the two ends of "good news" and "bad news" stay easy to
+// tell apart without looking at the screen.
+//
+// This is the sound for "the app just said no": a blank name, a locker that
+// was never picked, a manager's password that didn't match, a bill the server
+// refused to touch. It is NOT for routine confirmations — saving the tax rate
+// successfully doesn't buzz, it would teach staff to ignore the sound.
+const ERROR_VOLUME = 0.55;
+let errorSound: HTMLAudioElement | null = null;
+
+export function playErrorSound() {
+  if (!soundEnabled() || !errorSound) return;
+  // Same rewind-not-queue approach as the chime — two refusals in a row
+  // restart the buzz rather than stacking two on top of each other.
+  errorSound.currentTime = 0;
+  errorSound.play().catch(() => {});
+}
+
 // Is this element (or something it sits inside) meant to be tapped?
 //
 // Walks up a few levels because a tap usually lands on the text or the icon
@@ -123,6 +147,10 @@ export function start() {
   // Loaded up front so the first checkout of the day chimes on time rather
   // than a beat late while the file is still being fetched.
   chime.preload = "auto";
+
+  errorSound = new Audio("/sounds/error.mp3");
+  errorSound.volume = ERROR_VOLUME;
+  errorSound.preload = "auto";
 
   // Capture phase, so the sound fires even if something further down stops the
   // event from bubbling — a few of the overlays do exactly that.

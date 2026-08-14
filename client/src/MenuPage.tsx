@@ -435,7 +435,7 @@ function MenuPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ taxRate: rate }),
     }, approval));
-    if (ok) await dialog.say("Saved. New items will start at this rate.", { title: "Default tax" });
+    if (ok) await dialog.say("Saved. New items will start at this rate.", { title: "Default tax", tone: "info" });
   };
 
   // The cash discount. Unlike the tax rate above, this one DOES change what
@@ -460,7 +460,7 @@ function MenuPage() {
       amount > 0
         ? `Guests paying cash will get $${amount.toFixed(2)} off their entry, as long as their entry charge is $${minEntry.toFixed(2)} or more.`
         : "The cash discount is switched off. Nobody gets money off for paying cash.",
-      { title: "Cash discount" }
+      { title: "Cash discount", tone: "info" }
     );
   };
 

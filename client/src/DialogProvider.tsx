@@ -30,6 +30,13 @@
 //      until they were answered; these don't, so a call site that forgets the
 //      await will carry straight on as if the question came back empty.
 //
+// say() PLAYS THE ERROR SOUND BY DEFAULT. Almost everything said through it is
+// bad news — a blank field, a refused save, a bill the server won't touch — so
+// that's the assumption. The rare genuine good-news message (a setting saved
+// successfully) has to opt out with `{ tone: "info" }`, rather than every
+// error site having to opt in. Getting this backwards would mean a silent
+// error somewhere staff can't hear it, which is the whole reason this exists.
+//
 // ⚠️ THE ANSWER FROM askText HAS THREE STATES, and they are not the same:
 //      "some text" — they typed something
 //      ""          — they pressed Save with the box empty (a real answer)
@@ -46,6 +53,7 @@ import {
   type ReactNode,
   type FormEvent,
 } from "react";
+import { playErrorSound } from "./clickSound.ts";
 
 type Kind = "SAY" | "CONFIRM" | "ASK";
 
@@ -69,7 +77,9 @@ type Request = {
   resolve: (answer: Answer) => void;
 };
 
-type SayOptions = { title?: string };
+// "error" (the default) buzzes when the box appears; "info" stays quiet, for
+// the rare say() that's actually good news.
+type SayOptions = { title?: string; tone?: "error" | "info" };
 type ConfirmOptions = { title?: string; confirmLabel?: string; danger?: boolean };
 type AskOptions = {
   title?: string;
@@ -142,8 +152,11 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   };
 
   const dialog: Dialog = {
-    say: (message, options = {}) =>
-      push({
+    say: (message, options = {}) => {
+      // Played here, not when the box is dismissed — the sound is the
+      // notification, so it belongs at the moment the box appears.
+      if ((options.tone ?? "error") === "error") playErrorSound();
+      return push({
         kind: "SAY",
         title: options.title ?? "Notice",
         message,
@@ -152,7 +165,8 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         confirmLabel: "OK",
         danger: false,
         inputMode: "text",
-      }).then(() => undefined),
+      }).then(() => undefined);
+    },
 
     confirm: (question, options = {}) =>
       push({
