@@ -15,9 +15,31 @@
 //   sign-in time there is no token yet to attach.
 // ============================================================================
 
-// Where the server lives. Change this one line to point the app at a real
-// machine instead of this computer — it's the only place the address appears.
-export const API = "http://localhost:4000";
+// Where the server lives.
+//
+// In production the server serves the client too, so both share an origin and
+// SERVER_ORIGIN is empty — the browser fills in whatever host the page came
+// from. In development the client is on Vite's port and the server on 4000, so
+// client/.env.development points at it.
+//
+// The `: string` is deliberate. Vite types every VITE_ variable as `any`, and
+// without the label that `any` would spread into both exports below — a typo in
+// the variable name would then sail through the build and only show up as a
+// broken app.
+//
+// TWO exports, and they are NOT interchangeable:
+//
+//   API         base for fetch(). Ends in /api.
+//
+//   SOCKET_URL  base for io(). Must NOT include /api. socket.io reads a
+//               leading slash as a NAMESPACE, not a path — io("/api") would
+//               quietly connect to the wrong place and live updates would
+//               stop working with no error anywhere. `undefined` is the
+//               correct way to say "same origin as this page"; an empty
+//               string is not, it builds the broken URL "http://".
+const SERVER_ORIGIN: string = import.meta.env.VITE_SERVER_ORIGIN ?? "";
+export const API = `${SERVER_ORIGIN}/api`;
+export const SOCKET_URL = SERVER_ORIGIN || undefined;
 
 // What the server tells us about whoever signed in. `role` is "ADMIN" or
 // "STAFF", and it's what the Reports and Menu screens check.

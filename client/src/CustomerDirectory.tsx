@@ -31,7 +31,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { io } from "socket.io-client";
-import { authFetch, type LoggedInUser } from "./authFetch.ts";
+import { authFetch, SOCKET_URL, type LoggedInUser } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
 import { useDialog } from "./DialogProvider.tsx";
 import { SponsorPicker } from "./SponsorPicker.tsx";
@@ -41,7 +41,7 @@ import { type Customer } from "./types.ts";
 
 // The live line to the server — opened once when the app starts, shared by
 // both of the effects further down.
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 type Locker = { id: number; number: string; gender: string; status: string };
 type RosterEntry = { username: string; displayName: string; role: string };

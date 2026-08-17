@@ -20,13 +20,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
-import { authFetch, type LoggedInUser } from "./authFetch.ts";
+import { authFetch, SOCKET_URL, type LoggedInUser } from "./authFetch.ts";
 
 // Open a live line to the server, so this screen finds out when something
 // changes on another terminal. Note this sits OUTSIDE the component, at the
 // top of the file, so the connection is made once when the app starts and
 // stays open — not one per redraw.
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 // This screen describes its own slimmed-down shapes rather than importing the
 // full ones from types.ts, because it only displays a handful of fields.

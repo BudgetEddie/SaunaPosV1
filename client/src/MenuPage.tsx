@@ -29,12 +29,12 @@
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { io } from "socket.io-client";
-import { authFetch } from "./authFetch.ts";
+import { authFetch, SOCKET_URL } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
 import { useDialog } from "./DialogProvider.tsx";
 import { type Category, type MenuItem } from "./types.ts";
 
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 // The two halves of the menu. Which one a category is in has a real
 // consequence: FOOD_DRINK categories print kitchen tickets, MERCH_SERVICE

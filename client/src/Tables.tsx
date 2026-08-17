@@ -30,12 +30,12 @@
 
 import { useEffect, useState } from "react";
 import { io } from "socket.io-client";
-import { authFetch } from "./authFetch.ts";
+import { authFetch, SOCKET_URL } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
 import { useDialog } from "./DialogProvider.tsx";
 import { type Table } from "./types.ts";
 
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 const PANEL: React.CSSProperties = {
   background: "#fffdf9",

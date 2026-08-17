@@ -32,7 +32,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { io } from "socket.io-client";
-import { authFetch } from "./authFetch.ts";
+import { authFetch, SOCKET_URL } from "./authFetch.ts";
 import { useOverride } from "./OverrideProvider.tsx";
 import { useDialog } from "./DialogProvider.tsx";
 import { SponsorPicker } from "./SponsorPicker.tsx";
@@ -40,7 +40,7 @@ import Checkout from "./Checkout.tsx";
 import { type Category, type Locker, type MenuItem, type Visit } from "./types.ts";
 
 // The live line to the server, opened once when the app starts.
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 // One line in the cart. `qty` is what the − / + buttons change; when the order
 // is confirmed the line is expanded back into `qty` separate charges, which is

@@ -39,7 +39,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { io } from "socket.io-client";
-import { authFetch } from "./authFetch.ts";
+import { authFetch, SOCKET_URL } from "./authFetch.ts";
 import { type Category, type Visit } from "./types.ts";
 import { useDialog } from "./DialogProvider.tsx";
 import { playNewOrderChime } from "./clickSound.ts";
@@ -47,7 +47,7 @@ import { playNewOrderChime } from "./clickSound.ts";
 // The live line to the server. This screen depends on it more than any other —
 // it's how an order rung up at the front desk appears here seconds later
 // without anyone touching this computer.
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 // `canceled` is the important one. An item pulled from a bill isn't deleted
 // from a ticket that's already being cooked — it's flagged, so the cook can

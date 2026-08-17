@@ -33,6 +33,16 @@
     "skipLibCheck": true,
     // Tell it this code runs on a server, so things like reading files and
     // environment variables are expected to exist.
-    "types": ["node"]
-  }
+    "types": ["node"],
+    // Where `npm run build` puts the plain JavaScript it produces, and which
+    // folder it treats as the top of the source tree. Together they mean
+    // src/index.ts comes out as dist/index.js — which is what `npm start` runs
+    // and what the container runs.
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  // Only compile the real server. The scripts in prisma/ are run by hand with
+  // ts-node and are not part of the build. (ts-node ignores this list, so
+  // `npx ts-node prisma/seed-users.ts` still works exactly as before.)
+  "include": ["src"]
 }

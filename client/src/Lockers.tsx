@@ -28,11 +28,11 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
-import { authFetch } from "./authFetch.ts";
+import { authFetch, SOCKET_URL } from "./authFetch.ts";
 import { type Locker, type Visit } from "./types.ts";
 import { useDialog } from "./DialogProvider.tsx";
 
-const socket = io("http://localhost:4000");
+const socket = io(SOCKET_URL);
 
 const PANEL: React.CSSProperties = {
   background: "#fffdf9",

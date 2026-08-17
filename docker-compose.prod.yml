@@ -1,0 +1,67 @@
+# =============================================================================
+# THE WHOLE SYSTEM, ON THE SERVER.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build    start
+#   docker compose -f docker-compose.prod.yml logs -f app      watch it
+#   docker compose -f docker-compose.prod.yml down             stop
+#
+# Passwords are NOT in this file. They come from a .env file sitting next to
+# it, which is git-ignored and never leaves the server.
+# =============================================================================
+
+# Docker normally names a setup after the FOLDER it sits in, not the file. That
+# would give this the same name as docker-compose.yml next door — same
+# containers, same stored data. Starting this on a laptop would then quietly
+# adopt the development database, password `change_me` and all, and fail to log
+# in. Naming it here keeps the two completely separate.
+name: sauna-pos-prod
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sauna
+      # The `:?` means "stop with this message if it's missing". Without it a
+      # forgotten .env would start a database with no password and the app
+      # would just restart forever with nothing useful in the log.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the .env file next to this one}
+      POSTGRES_DB: sauna_pos
+    # NOTE: no `ports:` line. The database is reachable by the app container
+    # over Docker's private network and by nothing else. Publishing 5432 would
+    # expose it to the whole house for no benefit.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Postgres takes a few seconds to accept connections. Without this, the app
+    # starts first, fails to migrate, and restarts in a loop until it wins the
+    # race. This makes it wait properly instead.
+    #
+    # The `-h 127.0.0.1` is what makes the wait honest. While Postgres is
+    # setting itself up for the very first time it already answers on its
+    # internal channel, so the plain check can report "ready" before it truly
+    # is. Asking over the network the way the app will is the real test.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U sauna -d sauna_pos"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # `db` is the service name above — Docker resolves it to that container.
+      DATABASE_URL: postgresql://sauna:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the .env file next to this one}@db:5432/sauna_pos
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in the .env file next to this one}
+      PORT: 4000
+    # Port 80 on the VM maps to 4000 inside the container, so staff type
+    # http://10.0.0.241 with no port number to remember.
+    ports:
+      - "80:4000"
+
+volumes:
+  pgdata:

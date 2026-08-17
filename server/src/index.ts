@@ -47,6 +47,8 @@ import jwt from "jsonwebtoken";
 // Node's own randomness. Used for one thing: minting override tokens that
 // nobody can guess. Math.random() would NOT do here — it's predictable.
 import crypto from "node:crypto";
+// For locating the built client on disk, below.
+import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
 
 // The secret used to sign sign-in tokens, read from server/.env — a file kept
@@ -68,10 +70,42 @@ app.use(cors());
 // Automatically unpack incoming JSON, so handlers can just read `req.body`.
 app.use(express.json());
 
-// Socket.IO needs to sit alongside Express on the same port, so the app is
-// wrapped in a plain HTTP server and both are attached to it. `io` is what
+// ---- The outer web app ----
+//
+// `app` above holds every API route, all defined at the root: /customers,
+// /reports and so on. Four of those names are ALSO screens in the client.
+// If the browser asked this server for /customers it would get JSON, and a
+// member of staff refreshing the Customers page would be looking at raw data
+// instead of the app.
+//
+// So `app` gets mounted under /api, and a second, outer Express app handles
+// everything else: the built client files, and — for any address that isn't
+// a file — index.html, which lets React Router take it from there.
+//
+// Order matters. /api is checked first, then real files, then the catch-all.
+// Socket.IO is unaffected: it attaches to the HTTP server directly, below the
+// Express layer entirely.
+//
+// path.resolve is what guarantees an absolute path. sendFile refuses a relative
+// one and throws, so without it a CLIENT_DIST of "client/dist" — the obvious
+// thing to type — would turn every page of the app into a 500.
+const CLIENT_DIST = path.resolve(process.env.CLIENT_DIST || path.join(__dirname, "../../client/dist"));
+const web = express();
+web.use("/api", app);
+// An /api address that matched nothing above. Without this line it would fall
+// through to the catch-all and come back as index.html with status 200 — and
+// the client, which decides success by asking `res.ok`, would treat a typo'd or
+// missing endpoint as "saved successfully". A wrong address must look wrong.
+web.use("/api", (_req, res) => {
+  res.status(404).json({ error: "Unknown endpoint" });
+});
+web.use(express.static(CLIENT_DIST));
+web.get(/.*/, (_req, res) => res.sendFile(path.join(CLIENT_DIST, "index.html")));
+
+// Socket.IO needs to sit alongside Express on the same port, so the outer app
+// is wrapped in a plain HTTP server and both are attached to it. `io` is what
 // broadcasts "something changed" to every connected terminal.
-const httpServer = createServer(app);
+const httpServer = createServer(web);
 const io = new Server(httpServer, { cors: { origin: "*" } });
 
 // ---- Auth ----
@@ -2372,7 +2406,9 @@ io.on("connection", (socket) => {
   console.log("A terminal connected:", socket.id);
 });
 
-// Start listening. 4000 is what client/src/authFetch.ts expects, so changing
-// it here means changing it there too.
+// Start listening. 4000 is what client/.env.development points the client at
+// while you work, so changing it here means changing it there too. In
+// production nothing needs to know the number: the client is served by this
+// same server, so the browser uses whatever address the page came from.
 const port = process.env.PORT || 4000;
 httpServer.listen(port, () => console.log(`Server running on http://localhost:${port}`));
