@@ -180,14 +180,22 @@ enum Role {
 // LOCAL-FIRST: id is now a UUID, and `siteId` was added — decided 2026-08-19
 // that staff accounts are separate per site, not shared. A login created at
 // Mississauga only exists at Mississauga; someone working both locations
-// needs an account at each. `username` stays globally unique below rather
-// than unique-per-site — confirm this is still what's wanted once two sites
-// are actually live; nothing stops it being loosened to unique-per-site later
-// if two different people at two sites want the same username.
+// needs an account at each.
+//
+// `username` is unique PER SITE, not globally — see the @@unique at the
+// bottom of this model. Decided 2026-08-19, in the same pass. The old global
+// constraint would have been fine while Mississauga was the only site, and
+// then quietly broken: each site's own SQLite file would happily accept a
+// "frontdesk" at both locations, and the two rows would only ever meet — and
+// collide — once both sites' data landed together on the read-only standby at
+// the owner's house. Doing it now costs one line; doing it after Niagara
+// Falls is live means renaming somebody's login.
 model User {
   id           String   @id @default(uuid())
   siteId       String
-  username     String   @unique // lowercased before saving; no two the same
+  // Lowercased before saving. Unique within a site (see @@unique below), so
+  // Mississauga and Niagara Falls can each have their own "frontdesk".
+  username     String
   displayName  String // the friendly name shown on screen
   role         Role     @default(STAFF)
   // NOT the passphrase. A scrambled version of it that can be checked against
@@ -201,6 +209,14 @@ model User {
   // by type alone — hence the names, which must match Override exactly.
   approvedOverrides  Override[] @relation("OverrideApprover")
   requestedOverrides Override[] @relation("OverrideRequester")
+
+  // LOCAL-FIRST (2026-08-19): one "frontdesk" per site, not one in the world.
+  // Prisma turns this into a lookup key named `siteId_username` — which is
+  // why the sign-in in server/src/index.ts now asks for
+  // `where: { siteId_username: { siteId, username } }` instead of
+  // `where: { username }`. That's the only shape of lookup this allows: a
+  // username on its own is no longer enough to identify one row.
+  @@unique([siteId, username])
 }
 
 // House-wide configuration. There is exactly ONE of these, always id 1 — a

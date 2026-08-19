@@ -251,7 +251,16 @@ app.post("/login", async (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ error: "Enter both a name and a passphrase" });
   }
-  const user = await prisma.user.findUnique({ where: { username: String(username).toLowerCase() } });
+  // LOCAL-FIRST (2026-08-19): a username alone no longer identifies one
+  // account — it's unique per site now (see the @@unique on User in
+  // schema.prisma), so both this box and Niagara Falls' can have a
+  // "frontdesk". `siteId_username` is the compound key Prisma builds from
+  // that constraint. In practice this box only holds its own site's rows
+  // anyway, so this changes nothing today; it's what keeps sign-in correct
+  // once the standby at the owner's house holds both sites at once.
+  const user = await prisma.user.findUnique({
+    where: { siteId_username: { siteId: SITE_ID, username: String(username).toLowerCase() } },
+  });
   // The real passphrase is never stored — only a scrambled version it can be
   // compared against, which can't be turned back into the original. bcrypt is
   // deliberately slow, which is what makes guessing millions of passphrases
@@ -273,7 +282,12 @@ app.post("/login", async (req, res) => {
 // to tap. Note `select` — it returns names and roles only, never the stored
 // passphrase hashes.
 app.get("/login-roster", async (_req, res) => {
+  // LOCAL-FIRST (2026-08-19): only this site's staff. The extension in this
+  // file stamps siteId on new rows but does NOT filter reads, so the `where`
+  // has to be written out. Without it, a box that ever holds another site's
+  // rows would offer Niagara Falls' names as chips on a Mississauga screen.
   const users = await prisma.user.findMany({
+    where: { siteId: SITE_ID },
     select: { username: true, displayName: true, role: true },
     orderBy: { role: "asc" },
   });
@@ -335,7 +349,13 @@ app.post("/override", async (req: AuthedRequest, res) => {
   // No username was typed, so ask each admin account in turn "is this yours?".
   // bcrypt.compare is deliberately slow, which is most of what makes guessing
   // a password while standing at the counter impractical.
-  const admins = await prisma.user.findMany({ where: { role: "ADMIN" } });
+  //
+  // LOCAL-FIRST (2026-08-19): this site's admins only. Two reasons to scope
+  // it, beyond tidiness — a manager from the other location shouldn't be able
+  // to approve a void here just by knowing their own password, and every
+  // extra admin row is another deliberately-slow bcrypt compare on a staff
+  // member's screen while they wait at the counter.
+  const admins = await prisma.user.findMany({ where: { role: "ADMIN", siteId: SITE_ID } });
   let approver: (typeof admins)[number] | null = null;
   for (const admin of admins) {
     if (await bcrypt.compare(password, admin.passwordHash)) {

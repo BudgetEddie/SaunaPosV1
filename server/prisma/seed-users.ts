@@ -43,16 +43,13 @@ if (!SITE_ID) {
 // STAFF can do everything else. `displayName` is what appears on screen.
 //
 // LOCAL-FIRST: staff accounts are separate per site (decided 2026-08-19), and
-// this script only ever runs against one site's own local database — so
-// using the same username (e.g. "frontdesk") at both Mississauga and Niagara
-// Falls is fine here, each site's SQLite file only ever sees its own copy.
-// It stops being fine the moment both sites' data lands together on the
-// read-only standby at the owner's house: `username` is still declared
-// globally unique in schema.prisma, so two sites both naming someone
-// "frontdesk" WILL collide there. Flagged in schema.prisma too — worth
-// re-confirming (rename convention, e.g. "frontdesk-mississauga"? drop the
-// global unique constraint in favour of a compound one on
-// [siteId, username]?) once Niagara Falls actually has its own accounts.
+// this script only ever runs against one site's own local database. Using the
+// same username — "frontdesk" at both Mississauga and Niagara Falls — is
+// fine, and stays fine once both sites' data lands together on the read-only
+// standby at the owner's house: `username` is unique per site, not globally
+// (the @@unique([siteId, username]) on User in schema.prisma). So the two
+// names below can be left exactly as they are for every site; no
+// "frontdesk-mississauga" rename convention is needed.
 const USERS = [
   { username: "owner",     displayName: "Owner",      role: Role.ADMIN, password: "Test1234!" },
   { username: "frontdesk", displayName: "Front Desk", role: Role.STAFF, password: "Test12345!" },
@@ -66,14 +63,21 @@ async function main() {
     // hashing slower, which is the whole point, since it makes guessing
     // millions of passphrases impractical.
     const passwordHash = await bcrypt.hash(u.password, 10);
-    // "upsert" = update if this username exists, otherwise create it. That's
+    // "upsert" = update if this account exists, otherwise create it. That's
     // what makes re-running this safe, and what makes it a password reset.
     // siteId is stamped on both branches — on `create` because every row
     // needs one, and on `update` too, so re-running this script on an
     // existing account can't silently leave a stale/wrong siteId sitting on
     // it from before this migration.
+    //
+    // LOCAL-FIRST (2026-08-19): matched on site AND username, not username
+    // alone — `siteId_username` is the compound key Prisma builds from the
+    // @@unique on User in schema.prisma. Worth understanding what this buys:
+    // run against Mississauga's database it resets Mississauga's "frontdesk",
+    // and run against Niagara Falls' it creates a separate one rather than
+    // reaching across and overwriting the first.
     await prisma.user.upsert({
-      where: { username: u.username },
+      where: { siteId_username: { siteId: SITE_ID, username: u.username } },
       update: { displayName: u.displayName, role: u.role, passwordHash, siteId: SITE_ID },
       create: { username: u.username, displayName: u.displayName, role: u.role, passwordHash, siteId: SITE_ID },
     });
