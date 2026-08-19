@@ -1,4 +1,23 @@
 # =============================================================================
+# ⚠️  LEGACY — THE OLD POSTGRES DATABASE. NOT PART OF HOW THIS RUNS ANY MORE.
+#
+# LOCAL-FIRST (2026-08-19): development no longer needs anything in this file.
+# The database is now a SQLite file at server/prisma/dev.db — no container, no
+# password, nothing to start before `npm run dev`. If you've just cloned this
+# project, ignore this file entirely and follow the implementation guide.
+#
+# It's kept rather than deleted for exactly one reason: it's how you start the
+# OLD Postgres database again if you ever want to look at what was in it before
+# the switch. The data is still in the `pgdata` volume. To read it, start this
+# (`docker compose up -d`), then point something at it using the Postgres URL
+# that's commented out at the top of server/.env.
+#
+# Once you're sure there's nothing in there you want, this file and that volume
+# can both go:
+#     docker compose down -v
+#
+# Everything below describes the old arrangement and is left as it was.
+# -----------------------------------------------------------------------------
 # THE DATABASE, IN A BOX.
 #
 # WHAT IT IS

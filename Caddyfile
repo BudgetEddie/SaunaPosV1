@@ -1,0 +1,45 @@
+# =============================================================================
+# HTTPS ON THE SAUNA'S OWN NETWORK.
+#
+# WHAT THIS SOLVES
+#   Browsers increasingly treat plain http:// as broken — warnings in the bar,
+#   and some features (a card reader talking to the page, "save this password")
+#   simply refuse to work without a padlock. But a certificate from Let's
+#   Encrypt needs a public address, and this box deliberately has none.
+#
+#   So Caddy runs its own small certificate authority, issues a certificate to
+#   a name that only exists inside the building, and each terminal is told once
+#   to trust that authority. `tls internal` is the whole of that arrangement.
+#
+# THE TWO THINGS THAT MAKE IT WORK, both done by hand once per terminal:
+#   1. Point the name at this box. Mississauga has no router that can host DNS
+#      entries, so add a line to each terminal's own hosts file:
+#           <this box's IP address>   pos-mississauga.local
+#      Windows: C:\Windows\System32\drivers\etc\hosts, edited as administrator.
+#      Two devices — the front desk terminal and the kitchen display.
+#   2. Trust the certificate authority. Export Caddy's root certificate from
+#      the caddy_data volume and install it on both terminals. Without this,
+#      every page load shows a security warning and staff learn to click
+#      through warnings, which is a worse habit than plain http.
+#
+# WHY THIS FILE IS SHORTER THAN THE ORIGINAL GUIDE'S VERSION
+#   That version had Caddy serving the built client files itself, from
+#   /srv/client, with separate rules for /api and /socket.io. It doesn't need
+#   to any more: the server already serves the client under one origin (the
+#   "three problems solved" work in the deployment guide), so Caddy's only job
+#   here is HTTPS and passing everything through untouched. Websockets included
+#   — reverse_proxy handles the upgrade without being told.
+#
+# RENAMING THIS FOR ANOTHER SITE: change the hostname below, and change the
+# hosts-file line on that site's terminals to match. Nothing else.
+# =============================================================================
+
+pos-mississauga.local {
+	tls internal
+	encode gzip
+
+	# `app` is the service name in docker-compose.prod.yml — Docker's internal
+	# DNS resolves it to that container. Not 127.0.0.1: inside a container that
+	# would mean Caddy itself.
+	reverse_proxy app:4000
+}

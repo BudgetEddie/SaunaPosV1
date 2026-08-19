@@ -1,67 +1,88 @@
 # =============================================================================
-# THE WHOLE SYSTEM, ON THE SERVER.
+# THE WHOLE SYSTEM, ON ONE SITE'S BOX.
 #
 #   docker compose -f docker-compose.prod.yml up -d --build    start
 #   docker compose -f docker-compose.prod.yml logs -f app      watch it
 #   docker compose -f docker-compose.prod.yml down             stop
 #
-# Passwords are NOT in this file. They come from a .env file sitting next to
-# it, which is git-ignored and never leaves the server.
+# Secrets are NOT in this file. They come from a .env file sitting next to it,
+# which is git-ignored and never leaves the machine.
+#
+# LOCAL-FIRST (2026-08-19) — WHAT CHANGED AND WHY
+#
+#   The `db` service is gone. There is no Postgres container any more: the
+#   database is a single SQLite file living in the `sqlite_data` volume below,
+#   which is what makes a per-site box painless to deploy and is what lets
+#   Litestream stream it away continuously.
+#
+#   Removing the service does NOT delete the old `pgdata` volume — Docker keeps
+#   unreferenced volumes. That's deliberate: your old data is still there if you
+#   need to look at it. Once you're sure you don't:
+#       docker volume ls | grep pgdata
+#       docker volume rm <the one you want gone>
+#
+#   Caddy is new here. It terminates HTTPS on the sauna's own network so staff
+#   get a padlock and no browser warning, and passes everything through to the
+#   app. Note the app publishes NO ports now — the only way in is through Caddy.
 # =============================================================================
 
 # Docker normally names a setup after the FOLDER it sits in, not the file. That
 # would give this the same name as docker-compose.yml next door — same
-# containers, same stored data. Starting this on a laptop would then quietly
-# adopt the development database, password `change_me` and all, and fail to log
-# in. Naming it here keeps the two completely separate.
+# containers, same stored data. Naming it here keeps the two completely apart.
 name: sauna-pos-prod
 
 services:
-  db:
-    image: postgres:16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: sauna
-      # The `:?` means "stop with this message if it's missing". Without it a
-      # forgotten .env would start a database with no password and the app
-      # would just restart forever with nothing useful in the log.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the .env file next to this one}
-      POSTGRES_DB: sauna_pos
-    # NOTE: no `ports:` line. The database is reachable by the app container
-    # over Docker's private network and by nothing else. Publishing 5432 would
-    # expose it to the whole house for no benefit.
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    # Postgres takes a few seconds to accept connections. Without this, the app
-    # starts first, fails to migrate, and restarts in a loop until it wins the
-    # race. This makes it wait properly instead.
-    #
-    # The `-h 127.0.0.1` is what makes the wait honest. While Postgres is
-    # setting itself up for the very first time it already answers on its
-    # internal channel, so the plain check can report "ready" before it truly
-    # is. Asking over the network the way the app will is the real test.
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U sauna -d sauna_pos"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-
   app:
     build: .
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      # `db` is the service name above — Docker resolves it to that container.
-      DATABASE_URL: postgresql://sauna:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the .env file next to this one}@db:5432/sauna_pos
+      # `:?` means "stop with this message if it's missing". Without it a
+      # forgotten .env starts a server that signs tokens with `undefined`.
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in the .env file next to this one}
+      # WHICH BUILDING THIS IS. Every site runs this identical image and is
+      # told apart only by this one value. It is stamped onto every customer,
+      # visit, order and bill created here. Get it wrong and a site's records
+      # are filed under the other site's name — recoverable, but tedious.
+      #
+      # It must also match the last part of the replica path in
+      # server/litestream.yml, or Mississauga's backup lands in Niagara's
+      # folder. Nothing checks that for you.
+      SITE_ID: ${SITE_ID:?set SITE_ID in the .env file next to this one — e.g. MISSISSAUGA}
       PORT: 4000
-    # Port 80 on the VM maps to 4000 inside the container, so staff type
-    # http://10.0.0.241 with no port number to remember.
+      # DATABASE_URL is deliberately NOT set here. It's baked into the
+      # Dockerfile, because it has to agree with the path in litestream.yml and
+      # one place to get that wrong is enough.
+    volumes:
+      # The live database. A named volume, not a folder in this directory, so
+      # a careless `git clean` or a copied project folder can't take the
+      # business's records with it.
+      - sqlite_data:/data
+      # Where the backup stream goes: the owner's-house NAS, mounted over the
+      # WireGuard tunnel (Part 6 of the implementation guide). THIS MOUNT MUST
+      # EXIST ON THE HOST BEFORE `docker compose up` — if it doesn't, Docker
+      # silently creates an empty local folder of that name and the backups go
+      # nowhere at all, which looks exactly like working.
+      - /mnt/nas-backups:/backups
+    # No `ports:` — Caddy below is the only way in. Publishing 4000 as well
+    # would leave an unencrypted door open on the sauna's network for no gain.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
     ports:
-      - "80:4000"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddy generates its own certificate authority on first run and keeps it
+      # here. LOSING THIS VOLUME MEANS A NEW CA, which means every terminal
+      # stops trusting the site until the new root certificate is installed on
+      # each one by hand. Back it up, or at least know that's the consequence.
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
-  pgdata:
+  sqlite_data:
+  caddy_data:
+  caddy_config:

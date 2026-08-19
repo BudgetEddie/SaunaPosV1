@@ -7,3 +7,21 @@ dist
 **/.env
 .DS_Store
 **/.DS_Store
+
+# LOCAL-FIRST (2026-08-19): never bake a database into the image.
+#
+# The Dockerfile does `COPY server/ ./`, and since the SQLite switch there is
+# now a real database sitting at server/prisma/dev.db on any machine that has
+# run the app. Without these lines, your laptop's test database — test
+# customers, test sales — gets copied into every image built and shipped to
+# every site. It wouldn't even be used (the live one lives at /data/prod.db),
+# it would just be stowaway data riding along, in an image that gets pushed
+# around and kept.
+#
+# Same list as server/.gitignore, for the same reason: this file is DATA and
+# belongs in exactly one place, on the box that owns it.
+*.db
+**/*.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm

@@ -1,0 +1,72 @@
+# =============================================================================
+# PROVING THE STACK ON A LAPTOP, BEFORE ANY HARDWARE EXISTS.
+#
+# WHY THIS FILE EXISTS
+#   docker-compose.prod.yml expects things a laptop doesn't have: a NAS mounted
+#   at /mnt/nas-backups over a WireGuard tunnel, and a hostname that resolves
+#   on the sauna's network. Neither is built yet. But everything that's most
+#   likely to be WRONG — does the image build, does Litestream start, does the
+#   restore-then-migrate-then-replicate sequence work, does the app survive its
+#   backup destination vanishing — can be tested on a laptop right now.
+#
+#   So this is the production stack with two things swapped: backups go to a
+#   folder in this directory instead of a NAS, and the app is reachable
+#   directly instead of through Caddy.
+#
+# HOW TO USE IT
+#   1. Put JWT_SECRET and SITE_ID in a .env file next to this one:
+#          JWT_SECRET=anything-long-for-testing
+#          SITE_ID=MISSISSAUGA
+#   2. docker compose -f docker-compose.local-test.yml up --build
+#   3. Watch the log. You should see the three [entrypoint] lines in order,
+#      then the server starting.
+#   4. Open http://localhost:4000 — no HTTPS here, that's Caddy's job in prod.
+#   5. Sign in, add a customer, then look in ./litestream-test-backups —
+#      files should appear and keep changing as you use the app.
+#
+# THE TEST THAT ACTUALLY MATTERS — do this one, don't skip it
+#   The entire point of this architecture is that the till keeps working when
+#   the network doesn't. Litestream is supposed to retry quietly when it can't
+#   reach the backup destination. If it instead gives up, it takes the app down
+#   with it via `-exec`, and a failed BACKUP stops the BUSINESS. That would be
+#   the opposite of what this whole redesign is for.
+#
+#   While the stack is running and you're signed in:
+#       chmod 000 ./litestream-test-backups
+#   Then keep using the app for a couple of minutes — add a customer, check
+#   someone in, take an order. It should carry on completely normally, with
+#   complaints in the log and nothing else. Then:
+#       chmod 755 ./litestream-test-backups
+#   and confirm the backup folder starts getting fresh files again.
+#
+#   If the app DIES instead, Litestream must move out of the app container and
+#   into its own beside it, where it can fail without touching the till. Say so
+#   and it can be rearranged — it's a change to the Dockerfile and this file,
+#   not to any application code.
+#
+# This file is for a laptop. Don't deploy it to a real box.
+# =============================================================================
+
+name: sauna-pos-localtest
+
+services:
+  app:
+    build: .
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?put JWT_SECRET in a .env file next to this one}
+      SITE_ID: ${SITE_ID:?put SITE_ID in a .env file next to this one — e.g. MISSISSAUGA}
+      PORT: 4000
+    volumes:
+      # Same named-volume arrangement as production, so what you're testing is
+      # the real thing and not a simplified stand-in.
+      - sqlite_data:/data
+      # THE SWAP: a folder right here instead of the owner's-house NAS. Watch
+      # it fill up, and break it deliberately for the test described above.
+      - ./litestream-test-backups:/backups
+    # THE OTHER SWAP: reachable directly, because there's no Caddy here and no
+    # pos-mississauga.local on a laptop.
+    ports:
+      - "4000:4000"
+
+volumes:
+  sqlite_data:

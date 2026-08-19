@@ -1,0 +1,45 @@
+# =============================================================================
+# THE BACKUP CONFIGURATION.
+#
+# WHAT IT IS
+#   Tells Litestream which database file to watch and where to stream a copy of
+#   it. Litestream runs alongside the server (see server/docker-entrypoint.sh)
+#   and copies every change out continuously — not a nightly dump, a running
+#   stream. The window of work you could lose is about a second, not a day.
+#
+# WHAT IT IS NOT
+#   The destination is NOT a spare copy of the database you can open. It's a
+#   folder of snapshots and change-log segments that Litestream knows how to
+#   rebuild a database from. Don't expect to find a `.db` file there and don't
+#   hand it to anyone as "the backup file" — the whole folder is the backup.
+#
+# CONFIG FORMAT NOTE (matters if you copy an example off the internet)
+#   Litestream 0.5 replaced the old `replicas:` LIST with a single `replica:`.
+#   Most tutorials and older guides — including earlier drafts of the project's
+#   own implementation guide — still show the list form, which this version
+#   will not accept. One database, one destination.
+#
+# The two paths below are paths INSIDE the container. What they map to on the
+# actual machine is set in docker-compose.prod.yml.
+# =============================================================================
+
+dbs:
+  # The live database, on the box's own disk. Local and fast — this is what the
+  # app reads and writes, and nothing about a slow or missing network can get
+  # between the till and this file.
+  - path: /data/prod.db
+
+    replica:
+      # No `type:` needed — with a path and no URL, Litestream assumes `file`.
+      #
+      # /backups is the owner's house, reached over the tunnel (see Part 6 of
+      # the implementation guide). Each site gets its own subfolder so two
+      # sites' streams never land on top of each other. CHANGE THE LAST PART
+      # OF THIS PATH when standing up a second site — it should match SITE_ID.
+      path: /backups/litestream/mississauga
+
+      # How long to keep old change-log segments. 24h is the default; a day of
+      # point-in-time restore is plenty here, because the failure this guards
+      # against is "the box died", not "someone quietly corrupted data three
+      # weeks ago and nobody noticed".
+      retention: 24h

@@ -1,3 +1,9 @@
 node_modules/
 dist/
 .env
+
+# LOCAL-FIRST (2026-08-19): where docker-compose.local-test.yml drops backup
+# files while you're proving the stack on a laptop. Snapshots and change-log
+# segments of a test database — throwaway, but bulky and constantly rewritten,
+# so it has no business in git.
+litestream-test-backups/
