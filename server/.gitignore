@@ -3,3 +3,27 @@ node_modules
 .env
 
 /generated/prisma
+
+# LOCAL-FIRST (2026-08-19): the SQLite database itself. This is DATA, not code.
+#
+# Before this change the database lived in a Postgres container and there was
+# nothing in the repo folder to accidentally commit. Now it's a plain file at
+# prisma/dev.db, sitting right next to the schema — and `git add -A` would
+# happily commit it.
+#
+# Three reasons that must never happen:
+#   - It holds real guest records. Names, phone numbers, dates of birth. Once
+#     Mississauga is live, committing it publishes customer data into git
+#     history, where deleting it later is genuinely hard.
+#   - Every site has its OWN database. They are not meant to agree, and two
+#     sites pushing theirs would conflict on every single commit.
+#   - It's a binary that changes on every sale, so each commit would carry a
+#     fresh copy of the whole file.
+#
+# The migrations in prisma/migrations/ ARE code and DO belong in git — they're
+# the instructions for building an empty database. The database is what those
+# instructions produce locally.
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

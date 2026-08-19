@@ -85,14 +85,33 @@ const SITEABLE_MODELS = new Set(["User", "Customer", "Visit", "Order", "Bill"]);
 // The database connection. Every `prisma.something` below goes through this.
 //
 // LOCAL-FIRST: wrapped in a Client Extension that stamps `siteId` onto every
-// new row from the models above, so no route handler has to remember to do
-// it by hand — including ones written later. Using `$extends` (Client
-// Extensions) rather than the older `$use` middleware API some guides still
-// show; `$use` is the one Prisma has been deprecating. This has NOT been run
-// against a live database in this environment — the sandbox this was written
-// in can't reach Prisma's binary download host to run `prisma generate` —
-// so treat `npx prisma generate && npx prisma migrate dev` on your own
-// machine as the real first test of this, not a formality.
+// new row from the models above. Using `$extends` (Client Extensions) rather
+// than the older `$use` middleware API some guides still show; `$use` is the
+// one Prisma has been deprecating.
+//
+// BUT NOTE WHAT THIS DOES AND DOESN'T DO — this was originally written to be
+// the ONLY thing setting `siteId`, so route handlers wouldn't have to. That
+// doesn't survive contact with the compiler: the extension stamps the field
+// at RUN time, while TypeScript reads the schema, sees `siteId String` with
+// no default, and rejects every `create` that omits it. Seven of them, all at
+// once, the first time this was compiled.
+//
+// So every `create` on a siteable model now passes `siteId: SITE_ID` by hand,
+// and this extension is the backstop rather than the mechanism. That's the
+// better arrangement anyway: the compiler now REFUSES to let anyone add a
+// create that forgets it, which is a harder guarantee than a runtime hook
+// nobody reading the route can see. The extension still earns its place for
+// the cases types can't police — a `data` object built dynamically, or one
+// cast through `any`.
+//
+// It also stamps only `create`. `upsert` and `createMany` are separate
+// operations and are NOT covered. Today nothing siteable uses either (the
+// upserts here are on Settings, the createMany on Table); if that changes,
+// the `siteId` has to be written by hand there, and the compiler will say so.
+//
+// It also stamps WRITES only — it never filters reads. Anything that should
+// see just this site's rows needs its own `where: { siteId: SITE_ID }`. The
+// login roster and the manager-override admin scan below both do.
 const prisma = new PrismaClient().$extends({
   query: {
     $allModels: {
@@ -784,7 +803,7 @@ app.get("/customers", async (_req, res) => {
 // and its itemised bill. This is what fills the profile page, so it's much
 // heavier than the list above — hence two separate endpoints.
 app.get("/customers/:id", async (req, res) => {
-  const id = req.params.id; // Customer.id is a UUID string now (local-first change)
+  const id = String(req.params.id); // Customer.id is a UUID string now (local-first change)
   const customer = await prisma.customer.findUnique({
     where: { id },
     include: {
@@ -811,6 +830,7 @@ app.post("/customers", async (req, res) => {
   }
   const customer = await prisma.customer.create({
     data: {
+      siteId: SITE_ID,
       firstName,
       lastName,
       gender,
@@ -830,7 +850,7 @@ app.post("/customers", async (req, res) => {
 
 // Edit a guest's details. ADMIN ONLY.
 app.put("/customers/:id", requireAdmin, async (req, res) => {
-  const id = req.params.id; // Customer.id is a UUID string now (local-first change)
+  const id = String(req.params.id); // Customer.id is a UUID string now (local-first change)
   const { firstName, lastName, gender, phone, email, dateOfBirth, address, notes } = req.body;
   if (!firstName || !lastName || !gender) {
     return res.status(400).json({ error: "First name, last name, and gender are required" });
@@ -1020,12 +1040,12 @@ app.post("/check-in", async (req, res) => {
   // noticed and fixed it by hand.
   const [updatedLocker, newVisit] = await prisma.$transaction([
     prisma.locker.update({ where: { id: locker.id }, data: { status: "OCCUPIED" } }),
-    prisma.visit.create({ data: { customerId: customer.id, lockerId: locker.id } }),
+    prisma.visit.create({ data: { siteId: SITE_ID, customerId: customer.id, lockerId: locker.id } }),
   ]);
 
   // Open their tab, stamped with today's house tax rate for the record.
   const settings = await getSettings();
-  const bill = await prisma.bill.create({ data: { visitId: newVisit.id, taxRate: settings.taxRate } });
+  const bill = await prisma.bill.create({ data: { siteId: SITE_ID, visitId: newVisit.id, taxRate: settings.taxRate } });
 
   // Pick the admission to auto-apply: a pass redemption if the customer has
   // passes banked, otherwise the configured default admission.
@@ -1094,7 +1114,7 @@ app.post("/check-in", async (req, res) => {
 // which is why tapping an admission tile at the till skips the cart entirely.
 // Used when someone arrives on a day rate and upgrades, or vice versa.
 app.post("/visits/:visitId/set-admission", async (req, res) => {
-  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
+  const visitId = String(req.params.visitId); // Visit.id is a UUID string now (local-first change)
   const { menuItemId, passSponsorId } = req.body;
 
   const visit = await prisma.visit.findUnique({
@@ -1197,7 +1217,7 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
 // aren't counted: staff ring up first, then discount.
 // ---------------------------------------------------------------------------
 app.post("/visits/:visitId/apply-discount", requireAdmin, async (req, res) => {
-  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
+  const visitId = String(req.params.visitId); // Visit.id is a UUID string now (local-first change)
   const { menuItemId } = req.body;
 
   const visit = await prisma.visit.findUnique({
@@ -1268,7 +1288,7 @@ app.post("/visits/:visitId/apply-discount", requireAdmin, async (req, res) => {
 //
 // Answers null when the discount doesn't apply, which is most of the time.
 app.get("/visits/:visitId/cash-discount", async (req, res) => {
-  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
+  const visitId = String(req.params.visitId); // Visit.id is a UUID string now (local-first change)
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     include: { bill: { include: { lineItems: true } } },
@@ -1509,7 +1529,7 @@ app.put("/tables/:tableId/seats", requireAdmin, async (req, res) => {
 // The client sends one entry per unit — three teas arrive as three entries,
 // not "tea ×3" — because that's how bills and kitchen tickets count things.
 app.post("/visits/:visitId/confirm-order", async (req, res) => {
-  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
+  const visitId = String(req.params.visitId); // Visit.id is a UUID string now (local-first change)
   const { items } = req.body;
   // Optional. Which table in the lounge to run the food out to, when the guest
   // isn't waiting at their locker. Null for the great majority of orders.
@@ -1609,7 +1629,7 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
         where: { visitId, status: "QUEUED", tableId, station },
       });
       if (!order) {
-        order = await tx.order.create({ data: { visitId, tableId, station } });
+        order = await tx.order.create({ data: { siteId: SITE_ID, visitId, tableId, station } });
       }
       for (const it of forStation) {
         await tx.orderItem.create({
@@ -1661,7 +1681,7 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
 //   - the entry charge  → swap the admission type instead
 //   - a spent pass pack → the passes are already gone; can't unsell them
 app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, res) => {
-  const billId = req.params.billId; // Bill.id is a UUID string now (local-first change)
+  const billId = String(req.params.billId); // Bill.id is a UUID string now (local-first change)
   const lineItemId = Number(req.params.lineItemId); // BillLineItem.id is still a plain integer — see schema.prisma
 
   const lineItem = await prisma.billLineItem.findUnique({
@@ -1782,7 +1802,7 @@ app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, re
 //     receipt, which is ordered by createdAt.
 // ---------------------------------------------------------------------------
 app.put("/bills/:billId/line-items/:lineItemId/price", requireAdmin, async (req, res) => {
-  const billId = req.params.billId; // Bill.id is a UUID string now (local-first change)
+  const billId = String(req.params.billId); // Bill.id is a UUID string now (local-first change)
   const lineItemId = Number(req.params.lineItemId); // BillLineItem.id is still a plain integer — see schema.prisma
   const { amount } = req.body;
 
@@ -1856,7 +1876,7 @@ app.put("/bills/:billId/line-items/:lineItemId/price", requireAdmin, async (req,
 // exactly what was sold and that the money went back. There's no partial
 // refund — it's the whole bill or nothing.
 app.post("/bills/:id/refund", requireAdmin, async (req, res) => {
-  const id = req.params.id; // Bill.id is a UUID string now (local-first change)
+  const id = String(req.params.id); // Bill.id is a UUID string now (local-first change)
   const { reason } = req.body;
 
   const bill = await prisma.bill.findUnique({ where: { id } });
@@ -2061,7 +2081,7 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
 // Used by client/src/Receipt.tsx (the printable page) and by the receipt
 // overlay on the Reports screen. Not admin-only — staff print receipts.
 app.get("/bills/:id", async (req, res) => {
-  const id = req.params.id; // Bill.id is a UUID string now (local-first change)
+  const id = String(req.params.id); // Bill.id is a UUID string now (local-first change)
   const bill = await prisma.bill.findUnique({
     where: { id },
     include: {
@@ -2112,7 +2132,7 @@ app.get("/orders/open", async (req, res) => {
 
 // Move a ticket along: QUEUED → IN_PROGRESS → READY → COMPLETE.
 app.post("/orders/:id/status", async (req, res) => {
-  const id = req.params.id; // Order.id is a UUID string now (local-first change)
+  const id = String(req.params.id); // Order.id is a UUID string now (local-first change)
   const { status } = req.body;
   // Only these four words are accepted. Without this check a typo or a
   // tampered request could put a ticket into a state nothing recognises,
@@ -2395,6 +2415,7 @@ app.post("/takeout", async (req, res) => {
     //    dials, none of which needed a single line changed for this feature.
     const visit = await tx.visit.create({
       data: {
+        siteId: SITE_ID,
         kind: "TAKEOUT",
         takeoutNumber,
         takeoutName: typeof name === "string" && name.trim() ? name.trim() : null,
@@ -2405,6 +2426,7 @@ app.post("/takeout", async (req, res) => {
     // 2. The bill, born already settled.
     const bill = await tx.bill.create({
       data: {
+        siteId: SITE_ID,
         visitId: visit.id,
         taxRate: settings.taxRate,
         paymentMethod,
@@ -2438,7 +2460,7 @@ app.post("/takeout", async (req, res) => {
         (i: { station?: string }) => (i.station === "BAR" ? "BAR" : "KITCHEN") === station
       );
       if (forStation.length === 0) continue;
-      const order = await tx.order.create({ data: { visitId: visit.id, station } });
+      const order = await tx.order.create({ data: { siteId: SITE_ID, visitId: visit.id, station } });
       for (const it of forStation) {
         await tx.orderItem.create({
           data: { orderId: order.id, name: it.name, note: it.note || null },
