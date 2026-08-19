@@ -52,9 +52,11 @@ type RosterEntry = { username: string; displayName: string; role: string };
 // The LIST version is deliberately thin: the server sends only each person's
 // most recent visit, which is enough to show "last seen" and to tell whether
 // they're in the building right now (a visit with no check-out time).
-type ListVisit = { id: number; checkInAt: string; checkOutAt: string | null };
+// LOCAL-FIRST (2026-08-19): both ids below are UUID strings now — see the
+// note atop client/src/types.ts.
+type ListVisit = { id: string; checkInAt: string; checkOutAt: string | null };
 type ListCustomer = {
-  id: number;
+  id: string;
   firstName: string;
   lastName: string;
   gender: string;
@@ -66,15 +68,17 @@ type ListCustomer = {
 
 // The PROFILE version is the whole story: every visit this person has ever
 // made, each with its locker and its itemised bill.
+// LOCAL-FIRST: FullVisit.id and its nested bill.id are UUID strings now;
+// lineItems keep their plain number ids (BillLineItem didn't migrate).
 type FullVisit = {
-  id: number;
+  id: string;
   checkInAt: string;
   checkOutAt: string | null;
   locker: { number: string };
-  bill: { id: number; taxRate: number; lineItems: { id: number; amount: number }[] } | null;
+  bill: { id: string; taxRate: number; lineItems: { id: number; amount: number }[] } | null;
 };
 type FullCustomer = {
-  id: number;
+  id: string;
   firstName: string;
   lastName: string;
   gender: string;
@@ -200,7 +204,7 @@ function CustomerDirectory() {
   // profile is open; `selected` is the detailed copy fetched for it. Keeping
   // the id separate is what lets the second effect below re-fetch whenever a
   // different profile is opened.
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<FullCustomer | null>(null);
 
   const [editing, setEditing] = useState(false);       // is the edit form open
@@ -227,7 +231,7 @@ function CustomerDirectory() {
 
   const loadCustomers = () => authFetch(`/customers`).then((r) => r.json()).then(setCustomers);
   const loadLockers = () => authFetch(`/lockers`).then((r) => r.json()).then(setLockers);
-  const loadSelected = (id: number) =>
+  const loadSelected = (id: string) =>
     authFetch(`/customers/${id}`).then((r) => r.json()).then(setSelected);
 
   // EFFECT 1 of 2 — the list. Runs once when the screen opens, and keeps the
@@ -295,7 +299,7 @@ function CustomerDirectory() {
 
   // Switch from the list to one person's profile, closing any form that was
   // left open on the previous one.
-  const openProfile = (id: number) => {
+  const openProfile = (id: string) => {
     setSelectedId(id);
     setEditing(false);
     setLockerId("");

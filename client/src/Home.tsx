@@ -30,8 +30,10 @@ const socket = io(SOCKET_URL);
 
 // This screen describes its own slimmed-down shapes rather than importing the
 // full ones from types.ts, because it only displays a handful of fields.
+// LOCAL-FIRST (2026-08-19): Visit.id is a UUID string now, Locker.id is
+// still a plain number — see the note atop client/src/types.ts.
 type Visit = {
-  id: number;
+  id: string;
   checkInAt: string;
   customer: { firstName: string; lastName: string; gender: string; notes: string | null };
   locker: { number: string };
@@ -40,8 +42,10 @@ type Locker = { id: number; gender: string; status: string };
 // Home used to need nothing but the status, for the three kitchen counters. The
 // takeout tab needs the ticket itself, so this now describes more of what
 // /orders/open was already sending.
+// LOCAL-FIRST: the Order's own id is a UUID string now; the OrderItems inside
+// it kept their plain number ids (see client/src/types.ts).
 type Order = {
-  id: number;
+  id: string;
   status: string;
   // KITCHEN or BAR — which board this ticket is on. Home asks for tickets from
   // BOTH boards in one request and splits them here, which is why its fetch is

@@ -34,6 +34,50 @@
 //
 // (Unfamiliar with tables, fields and migrations? See CODE-GUIDE.md.)
 // ============================================================================
+//
+// ---------------------------------------------------------------------------
+// LOCAL-FIRST CHANGE (2026-08-19) — read this before touching an id or a
+// foreign key anywhere below.
+//
+// Mississauga is getting its own server instead of sharing the one at the
+// owner's house (see claude/sauna-pos-architecture-change-local-first.md in
+// the project docs — not in this repo). Niagara Falls gets one too, next
+// year. Each site's box can go offline and keep trading; it streams its
+// database to the owner's house in the background instead of depending on it
+// live. That only works if two sites can never hand out the same id to two
+// different rows — which a per-site `1, 2, 3...` counter absolutely would.
+//
+// So FIVE models below switched from an auto-incrementing integer id to a
+// UUID, and picked up a `siteId` column: User, Customer, Visit, Order, Bill.
+// These are the models a site actually creates on its own and that the
+// owner's house needs to tell apart by origin. Everything else — Locker,
+// Table, Category, MenuItem, Settings, Override, and the two line-item
+// tables (OrderItem, BillLineItem) — stays a plain integer, because nothing
+// about this change requires it to be anything else:
+//   - Locker and Table are fixed furniture, one set per building. Nothing
+//     ever merges two sites' locker lists, so there's no collision to guard
+//     against.
+//   - Category, MenuItem and Settings are the catalogue/config, shared and
+//     unscoped for now (see the implementation guide's open questions on
+//     whether pricing should sync from the owner's house later).
+//   - OrderItem and BillLineItem are always read and written through their
+//     parent Order/Bill, never looked up or merged on their own — so only
+//     the FOREIGN KEY pointing at that parent needs to change type, not
+//     their own id.
+//
+// The database is also SQLite now, not Postgres — see the `datasource`
+// block below. That's what makes a per-site box painless to deploy (one
+// file, no separate database container) and lets Litestream stream it to
+// the owner's house continuously.
+//
+// `siteId` is stamped automatically by a Prisma Client Extension in
+// server/src/index.ts (the `$extends`/`query` block, not the older `$use`
+// middleware API — that one is being phased out), from a required SITE_ID
+// environment variable. It is never something a screen sends. See that file
+// for the actual mechanism, and prisma/seed-users.ts for the one other place
+// that has to repeat the same SITE_ID check by hand, because it opens its own
+// separate PrismaClient rather than going through index.ts's wrapped one.
+// ---------------------------------------------------------------------------
 
 // Turns this description into the typed commands the server writes.
 generator client {
@@ -42,8 +86,12 @@ generator client {
 
 // Which database, and where. The address lives in server/.env, out of version
 // control, because it contains the password.
+//
+// SQLite as of the local-first change above (was Postgres). DATABASE_URL is
+// now a file path, e.g. `file:/data/prod.db` in production — see
+// docker-compose.prod.yml and litestream.yml.
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -128,8 +176,17 @@ enum Role {
 
 // A staff login. Created by prisma/seed-users.ts, never through the app —
 // there's no "add a user" screen.
+//
+// LOCAL-FIRST: id is now a UUID, and `siteId` was added — decided 2026-08-19
+// that staff accounts are separate per site, not shared. A login created at
+// Mississauga only exists at Mississauga; someone working both locations
+// needs an account at each. `username` stays globally unique below rather
+// than unique-per-site — confirm this is still what's wanted once two sites
+// are actually live; nothing stops it being loosened to unique-per-site later
+// if two different people at two sites want the same username.
 model User {
-  id           Int      @id @default(autoincrement())
+  id           String   @id @default(uuid())
+  siteId       String
   username     String   @unique // lowercased before saving; no two the same
   displayName  String // the friendly name shown on screen
   role         Role     @default(STAFF)
@@ -148,6 +205,13 @@ model User {
 
 // House-wide configuration. There is exactly ONE of these, always id 1 — a
 // single scratchpad row rather than a list of anything.
+//
+// LOCAL-FIRST: deliberately NOT given a siteId. Each site's box has its own
+// single Settings row, id 1, same as before — there's nothing to tell apart
+// by site because nothing about Settings is ever merged or compared across
+// sites. Whether tax rate / cash discount should someday be centrally set
+// from the owner's house is an open question (see the implementation guide),
+// not something this migration answers.
 model Settings {
   id                     Int   @id @default(1)
   // The default tax rate as a decimal: 0.13 means 13%. Only a STARTING POINT
@@ -177,6 +241,11 @@ model Settings {
 }
 
 // A menu section: "Drinks", "Admission", "Massage".
+//
+// LOCAL-FIRST: unscoped — no siteId, id stays a plain integer. The catalogue
+// is shared/duplicated per site rather than synced for now; see the
+// implementation guide's open question on whether pricing should someday
+// flow from the owner's house down to each site.
 model Category {
   id          Int        @id @default(autoincrement())
   name        String     @unique // two categories can't share a name
@@ -208,6 +277,8 @@ model Category {
 
 // One sellable thing. The catalogue only — see the note at the top about why
 // nothing here is linked to what's actually on a bill.
+//
+// LOCAL-FIRST: unscoped, same reasoning as Category above.
 model MenuItem {
   id           Int      @id @default(autoincrement())
   categoryId   Int
@@ -257,8 +328,14 @@ model MenuItem {
 
 // A guest. The `?` fields are optional — only a name and gender are required,
 // so the desk can sign someone up in seconds.
+//
+// LOCAL-FIRST: id is now a UUID, and `siteId` was added — a customer signed
+// up at Mississauga and one signed up at Niagara Falls must never collide
+// once both sites' data lands at the owner's house. Every FK that pointed at
+// Customer.id (Visit.customerId, Visit.passUsedCustomerId) changed to match.
 model Customer {
-  id               Int       @id @default(autoincrement())
+  id               String    @id @default(uuid())
+  siteId           String
   firstName        String
   lastName         String
   // Required, because it decides which locker pool they can use. The server
@@ -287,6 +364,11 @@ model Customer {
 
 // A physical locker in the building. Created once by prisma/seed.ts (120 of
 // them) and then just changes status as guests come and go.
+//
+// LOCAL-FIRST: unscoped, id stays a plain integer. A locker is fixed
+// furniture in one specific building — there is no scenario where two
+// sites' locker lists need to merge, so there's no collision to guard
+// against. See the note at the top of this file.
 model Locker {
   id     Int          @id @default(autoincrement())
   number String
@@ -301,15 +383,22 @@ model Locker {
 
 // ONE PERSON'S STAY — the hub everything else hangs off. Created at check-in,
 // closed at check-out.
+//
+// LOCAL-FIRST: id is now a UUID, and `siteId` was added, for the same reason
+// as Customer above — a visit opened at one site must never collide with one
+// opened at another once both land at the owner's house. `lockerId` stays an
+// Int FK (Locker didn't change); `customerId` and `passUsedCustomerId` became
+// String FKs (Customer did).
 model Visit {
-  id            Int       @id @default(autoincrement())
+  id            String    @id @default(uuid())
+  siteId        String
   // STAY or TAKEOUT. Defaulting to STAY is what makes every visit already in
   // the database correct without touching a single row.
   kind          VisitKind @default(STAY)
   // Both of these are now optional, and the `?` is the whole feature. A takeout
   // order has nobody signed in and no locker held. Every existing visit still
   // has both — nothing is being taken away, the rule is just being relaxed.
-  customerId    Int?
+  customerId    String?
   customer      Customer? @relation("VisitGuest", fields: [customerId], references: [id])
   lockerId      Int?
   locker        Locker?   @relation(fields: [lockerId], references: [id])
@@ -321,7 +410,7 @@ model Visit {
   // The balance still isn't touched until check-out — this only records whose
   // it will be. See the sponsor guard in index.ts for why that matters: a
   // sponsor can otherwise be committed to more guests than they have passes.
-  passUsedCustomerId Int?
+  passUsedCustomerId String?
   passUsedCustomer   Customer? @relation("PassSponsor", fields: [passUsedCustomerId], references: [id])
   // The ticket number called out at the counter — 1, 2, 3, starting again each
   // morning. Only takeout has one; a staying guest is found by locker instead.
@@ -337,13 +426,18 @@ model Visit {
   // balance isn't actually reduced until check-out.
   redeemsPass Boolean   @default(false)
   bill        Bill? // exactly one tab (see the @unique on Bill.visitId)
-  orders      Order[] // any number of kitchen tickets
+  orders      Order[]
 }
 
 // A ticket — one card on the Kitchen board or the Bar board.
+//
+// LOCAL-FIRST: id is now a UUID, and `siteId` was added, same reasoning as
+// Visit/Bill. `visitId` became a String FK (Visit did); `tableId` stays an
+// Int FK (Table didn't change).
 model Order {
-  id        Int         @id @default(autoincrement())
-  visitId   Int
+  id        String      @id @default(uuid())
+  siteId    String
+  visitId   String
   visit     Visit       @relation(fields: [visitId], references: [id])
   status    OrderStatus @default(QUEUED)
   // WHICH BOARD THIS CARD IS ON. Copied off the category when the ticket is
@@ -375,9 +469,15 @@ model Order {
 
 // One thing to make. Note there's no price here — the money side lives on the
 // bill; this is purely the cooking instruction.
+//
+// LOCAL-FIRST: id stays a plain integer, and there's no siteId here. An
+// OrderItem is never looked up or merged on its own — it's always read and
+// written through its parent Order, which already carries the collision-safe
+// id and the siteId. Only the foreign key pointing at that parent changed
+// type, to match Order.id.
 model OrderItem {
   id       Int     @id @default(autoincrement())
-  orderId  Int
+  orderId  String
   order    Order   @relation(fields: [orderId], references: [id])
   // Matched against BillLineItem.description BY TEXT when a charge is voided —
   // there's no id linking the two.
@@ -390,11 +490,16 @@ model OrderItem {
 }
 
 // THE TAB for one visit. Opened at check-in, closed at check-out.
+//
+// LOCAL-FIRST: id is now a UUID, and `siteId` was added, same reasoning as
+// Visit. `visitId` became a String FK (Visit did) but keeps its `@unique` —
+// still exactly one bill per visit, the type just changed.
 model Bill {
-  id            Int            @id @default(autoincrement())
+  id            String         @id @default(uuid())
+  siteId        String
   // `@unique` here is what enforces "one bill per visit" — the database itself
   // refuses to let a visit have two.
-  visitId       Int            @unique
+  visitId       String         @unique
   visit         Visit          @relation(fields: [visitId], references: [id])
   lineItems     BillLineItem[]
   // The house rate as it stood at check-in, kept as a record. NOT what the
@@ -413,9 +518,13 @@ model Bill {
 
 // ONE CHARGE on a tab. Three teas are three of these, not one with a quantity —
 // the screens group them for display, but the data stays one row per unit.
+//
+// LOCAL-FIRST: id stays a plain integer, and there's no siteId here — same
+// reasoning as OrderItem above. Only `billId`, the foreign key pointing at
+// Bill, changed type.
 model BillLineItem {
   id                  Int      @id @default(autoincrement())
-  billId              Int
+  billId              String
   bill                Bill     @relation(fields: [billId], references: [id])
   // Plain text copied from the menu item at the moment of sale, NOT a link to
   // it. This is why deleting an item or changing its price can never alter an
@@ -453,6 +562,9 @@ model BillLineItem {
 // A dining table in the lounge. Deliberately not a Locker: no gender, no guest,
 // no bill. Anything ordered at a table goes on that guest's locker tab, so this
 // model exists only to answer "is there somewhere to sit".
+//
+// LOCAL-FIRST: unscoped, same reasoning as Locker — fixed furniture in one
+// building, nothing ever merges two sites' table lists.
 model Table {
   id     Int         @id @default(autoincrement())
   number String
@@ -490,6 +602,11 @@ enum TableStatus {
 //    `scope` comes from the client. So a PAGE approval for "Open Reports" will
 //    also satisfy any other admin endpoint until it expires. Tightening that
 //    means storing a capability here and checking it in requireAdmin.
+//
+// LOCAL-FIRST: unscoped, id stays a plain integer — an approval only ever
+// matters on the site it happened at, and it's never looked up across sites.
+// `approvedById` and `requestedById` changed type to String, because they
+// point at User, which did change.
 model Override {
   id            Int      @id @default(autoincrement())
   // The secret the client sends back in the X-Override header.
@@ -498,9 +615,9 @@ model Override {
   action        String
   // ACTION = one use, minutes. PAGE = reusable while a screen is open.
   scope         String   @default("ACTION")
-  approvedById  Int
+  approvedById  String
   approvedBy    User     @relation("OverrideApprover", fields: [approvedById], references: [id])
-  requestedById Int
+  requestedById String
   requestedBy   User     @relation("OverrideRequester", fields: [requestedById], references: [id])
   createdAt     DateTime @default(now())
   expiresAt     DateTime

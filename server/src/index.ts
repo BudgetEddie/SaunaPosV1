@@ -61,8 +61,50 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 
+// LOCAL-FIRST (2026-08-19): which site's box this is. Every site runs this
+// same code — Mississauga, Niagara Falls, eventually more — told apart only
+// by this one value. It has to exist before anything is created, the same
+// reasoning as JWT_SECRET just above: a box silently writing rows with no
+// site on them is a worse failure than a box that refuses to start.
+const SITE_ID = process.env.SITE_ID || "";
+if (!SITE_ID) {
+  console.error("SITE_ID is missing from server/.env — see claude/sauna-pos-local-first-implementation-guide.md.");
+  process.exit(1);
+}
+
+// Which models get siteId stamped automatically below. Kept as one list so it
+// stays in sync with the LOCAL-FIRST comment block at the top of
+// schema.prisma, which explains why these five and not the others: these are
+// the models a site actually creates on its own that the owner's house later
+// needs to tell apart by origin. Everything else (Locker, Table, Category,
+// MenuItem, Settings, Override, and the two line-item tables) is fixed
+// furniture, shared catalogue, or always reached through one of these five —
+// nothing about it needs to know which site it came from.
+const SITEABLE_MODELS = new Set(["User", "Customer", "Visit", "Order", "Bill"]);
+
 // The database connection. Every `prisma.something` below goes through this.
-const prisma = new PrismaClient();
+//
+// LOCAL-FIRST: wrapped in a Client Extension that stamps `siteId` onto every
+// new row from the models above, so no route handler has to remember to do
+// it by hand — including ones written later. Using `$extends` (Client
+// Extensions) rather than the older `$use` middleware API some guides still
+// show; `$use` is the one Prisma has been deprecating. This has NOT been run
+// against a live database in this environment — the sandbox this was written
+// in can't reach Prisma's binary download host to run `prisma generate` —
+// so treat `npx prisma generate && npx prisma migrate dev` on your own
+// machine as the real first test of this, not a formality.
+const prisma = new PrismaClient().$extends({
+  query: {
+    $allModels: {
+      async create({ model, args, query }) {
+        if (SITEABLE_MODELS.has(model)) {
+          args.data = { ...args.data, siteId: SITE_ID };
+        }
+        return query(args);
+      },
+    },
+  },
+});
 const app = express();
 // Allow browsers on other addresses to talk to us. Browsers block that by
 // default; the client runs on a different port, so it would be refused.
@@ -112,7 +154,7 @@ const io = new Server(httpServer, { cors: { origin: "*" } });
 
 // A normal request, plus the `auth` note requireAuth attaches once it has
 // checked the token. Handlers below read `req.auth.role` from it.
-type AuthedRequest = Request & { auth?: { userId: number; role: string } };
+type AuthedRequest = Request & { auth?: { userId: string; role: string } };
 
 // The bouncer. Runs before a protected request and either waves it through by
 // calling `next()`, or answers 401 and stops it dead.
@@ -132,7 +174,7 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
     //
     // Note the role comes out of the TOKEN, not the database — so changing
     // someone's role doesn't take effect until their token runs out.
-    req.auth = jwt.verify(token, JWT_SECRET) as { userId: number; role: string };
+    req.auth = jwt.verify(token, JWT_SECRET) as { userId: string; role: string };
     next();
   } catch {
     res.status(401).json({ error: "Session expired — sign in again" });
@@ -272,7 +314,7 @@ const OVERRIDE_MINUTES: Record<string, number> = { ACTION: 2, PAGE: 10 };
 // Five wrong passwords locks that staff member's prompt for five minutes.
 // In memory on purpose: a restart clears it, and a fat-fingered password
 // doesn't deserve a permanent row in the database.
-const overrideLockout = new Map<number, { failures: number; lockedUntil: number }>();
+const overrideLockout = new Map<string, { failures: number; lockedUntil: number }>();
 
 app.post("/override", async (req: AuthedRequest, res) => {
   const staffId = req.auth?.userId;
@@ -722,7 +764,7 @@ app.get("/customers", async (_req, res) => {
 // and its itemised bill. This is what fills the profile page, so it's much
 // heavier than the list above — hence two separate endpoints.
 app.get("/customers/:id", async (req, res) => {
-  const id = Number(req.params.id);
+  const id = req.params.id; // Customer.id is a UUID string now (local-first change)
   const customer = await prisma.customer.findUnique({
     where: { id },
     include: {
@@ -768,7 +810,7 @@ app.post("/customers", async (req, res) => {
 
 // Edit a guest's details. ADMIN ONLY.
 app.put("/customers/:id", requireAdmin, async (req, res) => {
-  const id = Number(req.params.id);
+  const id = req.params.id; // Customer.id is a UUID string now (local-first change)
   const { firstName, lastName, gender, phone, email, dateOfBirth, address, notes } = req.body;
   if (!firstName || !lastName || !gender) {
     return res.status(400).json({ error: "First name, last name, and gender are required" });
@@ -895,7 +937,7 @@ app.get("/visits/active", async (_req, res) => {
 // `exceptVisitId` is for re-picking a sponsor on a visit that already has one:
 // without it the visit would be counted against itself and refuse.
 // ---------------------------------------------------------------------------
-async function sponsorRefusal(sponsorId: number, exceptVisitId?: number) {
+async function sponsorRefusal(sponsorId: string, exceptVisitId?: string) {
   const sponsor = await prisma.customer.findUnique({ where: { id: sponsorId } });
   if (!sponsor) return "That customer no longer exists";
 
@@ -932,7 +974,7 @@ app.post("/check-in", async (req, res) => {
   // Someone else is paying for this entry out of their pass balance. Checked
   // before anything is created, so a refusal leaves nothing half-done.
   if (passSponsorId) {
-    const refusal = await sponsorRefusal(Number(passSponsorId));
+    const refusal = await sponsorRefusal(passSponsorId);
     if (refusal) return res.status(409).json({ error: refusal });
   }
 
@@ -1006,7 +1048,7 @@ app.post("/check-in", async (req, res) => {
           redeemsPass: true,
           // Whose balance this will come out of at check-out. Null here means
           // the guest's own.
-          passUsedCustomerId: passSponsorId ? Number(passSponsorId) : null,
+          passUsedCustomerId: passSponsorId ? passSponsorId : null,
         },
       })
     : newVisit;
@@ -1032,7 +1074,7 @@ app.post("/check-in", async (req, res) => {
 // which is why tapping an admission tile at the till skips the cart entirely.
 // Used when someone arrives on a day rate and upgrades, or vice versa.
 app.post("/visits/:visitId/set-admission", async (req, res) => {
-  const visitId = Number(req.params.visitId);
+  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
   const { menuItemId, passSponsorId } = req.body;
 
   const visit = await prisma.visit.findUnique({
@@ -1071,7 +1113,7 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
   // Whose pass pays. A sponsor is only meaningful on a pass admission — asking
   // for one alongside a cash entry is a mistake worth saying out loud rather
   // than silently ignoring.
-  const sponsorId = passSponsorId ? Number(passSponsorId) : null;
+  const sponsorId = passSponsorId ? String(passSponsorId) : null;
   if (sponsorId && !item.redeemsPass) {
     return res.status(400).json({ error: `"${item.name}" isn't paid with a pass, so it can't be sponsored` });
   }
@@ -1135,7 +1177,7 @@ app.post("/visits/:visitId/set-admission", async (req, res) => {
 // aren't counted: staff ring up first, then discount.
 // ---------------------------------------------------------------------------
 app.post("/visits/:visitId/apply-discount", requireAdmin, async (req, res) => {
-  const visitId = Number(req.params.visitId);
+  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
   const { menuItemId } = req.body;
 
   const visit = await prisma.visit.findUnique({
@@ -1206,7 +1248,7 @@ app.post("/visits/:visitId/apply-discount", requireAdmin, async (req, res) => {
 //
 // Answers null when the discount doesn't apply, which is most of the time.
 app.get("/visits/:visitId/cash-discount", async (req, res) => {
-  const visitId = Number(req.params.visitId);
+  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
   const visit = await prisma.visit.findUnique({
     where: { id: visitId },
     include: { bill: { include: { lineItems: true } } },
@@ -1447,7 +1489,7 @@ app.put("/tables/:tableId/seats", requireAdmin, async (req, res) => {
 // The client sends one entry per unit — three teas arrive as three entries,
 // not "tea ×3" — because that's how bills and kitchen tickets count things.
 app.post("/visits/:visitId/confirm-order", async (req, res) => {
-  const visitId = Number(req.params.visitId);
+  const visitId = req.params.visitId; // Visit.id is a UUID string now (local-first change)
   const { items } = req.body;
   // Optional. Which table in the lounge to run the food out to, when the guest
   // isn't waiting at their locker. Null for the great majority of orders.
@@ -1599,8 +1641,8 @@ app.post("/visits/:visitId/confirm-order", async (req, res) => {
 //   - the entry charge  → swap the admission type instead
 //   - a spent pass pack → the passes are already gone; can't unsell them
 app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, res) => {
-  const billId = Number(req.params.billId);
-  const lineItemId = Number(req.params.lineItemId);
+  const billId = req.params.billId; // Bill.id is a UUID string now (local-first change)
+  const lineItemId = Number(req.params.lineItemId); // BillLineItem.id is still a plain integer — see schema.prisma
 
   const lineItem = await prisma.billLineItem.findUnique({
     where: { id: lineItemId },
@@ -1720,8 +1762,8 @@ app.delete("/bills/:billId/line-items/:lineItemId", requireAdmin, async (req, re
 //     receipt, which is ordered by createdAt.
 // ---------------------------------------------------------------------------
 app.put("/bills/:billId/line-items/:lineItemId/price", requireAdmin, async (req, res) => {
-  const billId = Number(req.params.billId);
-  const lineItemId = Number(req.params.lineItemId);
+  const billId = req.params.billId; // Bill.id is a UUID string now (local-first change)
+  const lineItemId = Number(req.params.lineItemId); // BillLineItem.id is still a plain integer — see schema.prisma
   const { amount } = req.body;
 
   // The browser picks this number, unlike the discount endpoint where the
@@ -1794,7 +1836,7 @@ app.put("/bills/:billId/line-items/:lineItemId/price", requireAdmin, async (req,
 // exactly what was sold and that the money went back. There's no partial
 // refund — it's the whole bill or nothing.
 app.post("/bills/:id/refund", requireAdmin, async (req, res) => {
-  const id = Number(req.params.id);
+  const id = req.params.id; // Bill.id is a UUID string now (local-first change)
   const { reason } = req.body;
 
   const bill = await prisma.bill.findUnique({ where: { id } });
@@ -1999,7 +2041,7 @@ app.get("/reports/daily", requireAdmin, async (req, res) => {
 // Used by client/src/Receipt.tsx (the printable page) and by the receipt
 // overlay on the Reports screen. Not admin-only — staff print receipts.
 app.get("/bills/:id", async (req, res) => {
-  const id = Number(req.params.id);
+  const id = req.params.id; // Bill.id is a UUID string now (local-first change)
   const bill = await prisma.bill.findUnique({
     where: { id },
     include: {
@@ -2050,7 +2092,7 @@ app.get("/orders/open", async (req, res) => {
 
 // Move a ticket along: QUEUED → IN_PROGRESS → READY → COMPLETE.
 app.post("/orders/:id/status", async (req, res) => {
-  const id = Number(req.params.id);
+  const id = req.params.id; // Order.id is a UUID string now (local-first change)
   const { status } = req.body;
   // Only these four words are accepted. Without this check a typo or a
   // tampered request could put a ticket into a state nothing recognises,

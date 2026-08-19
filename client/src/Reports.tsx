@@ -33,8 +33,11 @@ import { useOverride } from "./OverrideProvider.tsx";
 import { useDialog } from "./DialogProvider.tsx";
 
 // One closed bill in the day's list.
+//
+// LOCAL-FIRST (2026-08-19): id is a UUID string now, matching Bill.id in
+// client/src/types.ts.
 type BillRow = {
-  id: number;
+  id: string;
   paidAt: string;
   paymentMethod: string;
   subtotal: number;
@@ -49,7 +52,8 @@ type BillRow = {
   refunded: boolean;
 };
 type TopItem = { name: string; qty: number; revenue: number };
-type Visitor = { id: number; name: string; visits: number; spend: number };
+// LOCAL-FIRST: id is a Customer id, now a UUID string — see types.ts.
+type Visitor = { id: string; name: string; visits: number; spend: number };
 
 // One manager approval, as the audit log shows it. `usedAt` being null on an
 // ACTION row means a manager typed their password and the thing then didn't
@@ -86,9 +90,11 @@ type Report = {
   truncated: boolean;
 };
 
+// LOCAL-FIRST: ReceiptLine.id is BillLineItem.id — unmigrated, stays a plain
+// number. ReceiptBill.id is Bill.id — a UUID string now. See types.ts.
 type ReceiptLine = { id: number; description: string; amount: number; taxRate: number; isAdmission: boolean };
 type ReceiptBill = {
-  id: number;
+  id: string;
   taxRate: number;
   paidAt: string | null;
   paymentMethod: string | null;
@@ -281,7 +287,7 @@ function Reports() {
     );
   }
 
-  const openReceipt = async (billId: number) => {
+  const openReceipt = async (billId: string) => {
     const res = await authFetch(`/bills/${billId}`);
     if (!res.ok) return;
     setReceipt(await res.json());

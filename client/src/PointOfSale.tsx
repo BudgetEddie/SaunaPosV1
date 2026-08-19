@@ -404,7 +404,7 @@ function PointOfSale() {
   const [defaultTaxRate, setDefaultTaxRate] = useState(0.13);    // for custom charges
 
   // ---- what's on screen right now ----
-  const [selectedVisitId, setSelectedVisitId] = useState<number | null>(null);
+  const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   const [checkoutVisit, setCheckoutVisit] = useState<Visit | null>(null);
   const [autoOpened, setAutoOpened] = useState(false);      // guard, see below
   const [cart, setCart] = useState<Cart>({});               // the unconfirmed order
@@ -585,7 +585,7 @@ function PointOfSale() {
 
   // Open a guest's order screen with everything from the last one cleared —
   // an abandoned cart must never follow staff onto the next person's tab.
-  const openGuest = (id: number) => {
+  const openGuest = (id: string) => {
     setSelectedVisitId(id);
     setCart({});
     setActiveCategoryId(null);

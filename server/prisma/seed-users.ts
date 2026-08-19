@@ -24,11 +24,35 @@ import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
+// LOCAL-FIRST (2026-08-19): which site this script is creating/resetting
+// accounts for. This script opens its own PrismaClient above — it does NOT
+// go through the $extends wrapper in server/src/index.ts that stamps siteId
+// onto new rows automatically — so it has to be checked and applied here too.
+// Same reasoning as SITE_ID in index.ts: a box silently saving accounts with
+// no site on them is worse than a script that refuses to run.
+const SITE_ID = process.env.SITE_ID || "";
+if (!SITE_ID) {
+  console.error("SITE_ID is missing from server/.env — see claude/sauna-pos-local-first-implementation-guide.md.");
+  process.exit(1);
+}
+
 // EDIT THESE two passwords before running. Rerunning this script later
 // with new passwords is also how you reset a forgotten one.
 //
 // ADMIN can see the takings, edit the menu, void charges and give refunds.
 // STAFF can do everything else. `displayName` is what appears on screen.
+//
+// LOCAL-FIRST: staff accounts are separate per site (decided 2026-08-19), and
+// this script only ever runs against one site's own local database — so
+// using the same username (e.g. "frontdesk") at both Mississauga and Niagara
+// Falls is fine here, each site's SQLite file only ever sees its own copy.
+// It stops being fine the moment both sites' data lands together on the
+// read-only standby at the owner's house: `username` is still declared
+// globally unique in schema.prisma, so two sites both naming someone
+// "frontdesk" WILL collide there. Flagged in schema.prisma too — worth
+// re-confirming (rename convention, e.g. "frontdesk-mississauga"? drop the
+// global unique constraint in favour of a compound one on
+// [siteId, username]?) once Niagara Falls actually has its own accounts.
 const USERS = [
   { username: "owner",     displayName: "Owner",      role: Role.ADMIN, password: "Test1234!" },
   { username: "frontdesk", displayName: "Front Desk", role: Role.STAFF, password: "Test12345!" },
@@ -44,12 +68,16 @@ async function main() {
     const passwordHash = await bcrypt.hash(u.password, 10);
     // "upsert" = update if this username exists, otherwise create it. That's
     // what makes re-running this safe, and what makes it a password reset.
+    // siteId is stamped on both branches — on `create` because every row
+    // needs one, and on `update` too, so re-running this script on an
+    // existing account can't silently leave a stale/wrong siteId sitting on
+    // it from before this migration.
     await prisma.user.upsert({
       where: { username: u.username },
-      update: { displayName: u.displayName, role: u.role, passwordHash },
-      create: { username: u.username, displayName: u.displayName, role: u.role, passwordHash },
+      update: { displayName: u.displayName, role: u.role, passwordHash, siteId: SITE_ID },
+      create: { username: u.username, displayName: u.displayName, role: u.role, passwordHash, siteId: SITE_ID },
     });
-    console.log(`Saved user ${u.username} (${u.role})`);
+    console.log(`Saved user ${u.username} (${u.role}) for site ${SITE_ID}`);
   }
 }
 

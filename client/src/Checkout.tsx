@@ -40,7 +40,10 @@ type RosterEntry = { username: string; displayName: string; role: string };
 // A snapshot taken at the moment of payment, for the green confirmation
 // screen. It has to be a copy: the instant checkout succeeds the guest stops
 // being "active", so the live data behind this screen disappears.
-type Paid = { total: number; method: string; name: string; locker: string; gender: string; billId: number };
+//
+// LOCAL-FIRST (2026-08-19): billId is a UUID string now, matching Bill.id in
+// client/src/types.ts.
+type Paid = { total: number; method: string; name: string; locker: string; gender: string; billId: string };
 
 // Three separate $6 teas on the bill are one "Tea ×3" row here. The underlying
 // charge ids come along for the ride so voiding can delete exactly one of them.

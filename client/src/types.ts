@@ -22,8 +22,13 @@
 
 // A guest. `visitPassBalance` is how many prepaid entries they have banked —
 // see the note on MenuItem below for how those are bought and spent.
+//
+// LOCAL-FIRST (2026-08-19): `id` is a UUID string now, not an auto-incrementing
+// number — see server/prisma/schema.prisma's LOCAL-FIRST comment block. Every
+// other id in this file that points at a Customer (Visit.passUsedCustomer.id
+// below, and CustomerDirectory.tsx's own richer types) had to change to match.
 export type Customer = {
-  id: number;
+  id: string;
   firstName: string;
   lastName: string;
   gender: string;
@@ -104,7 +109,10 @@ export type BillLineItem = {
 // stood at check-in — it's kept for history, but the real maths uses the rate
 // on each line item above.
 // Only ever seen nested inside a Visit.
-export type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
+// LOCAL-FIRST (2026-08-19): `id` is a UUID string now — see the note on
+// Customer above. BillLineItem's own `id` is untouched: it isn't one of the
+// five models that migrated (see schema.prisma), so it stays a plain number.
+export type Bill = { id: string; taxRate: number; lineItems: BillLineItem[] };
 
 // A ticket. `status` walks QUEUED → IN_PROGRESS → READY → COMPLETE as staff tap
 // through it on whichever board it's on, and `station` says which board that is
@@ -113,8 +121,12 @@ export type Bill = { id: number; taxRate: number; lineItems: BillLineItem[] };
 // An item marked `canceled` isn't deleted — it stays visible so the cook or the
 // bar notices something was pulled, then they dismiss it themselves.
 // Only ever seen nested inside a Visit.
+// LOCAL-FIRST (2026-08-19): the Order's own `id` is a UUID string now — see
+// the note on Customer above. The items inside it are NOT: OrderItem is
+// always read and written through its parent Order and never looked up on
+// its own, so it kept its plain number id (see schema.prisma).
 export type Order = {
-  id: number;
+  id: string;
   status: string;
   station: string;
   items: { id: number; name: string; note: string | null; canceled: boolean }[];
@@ -126,8 +138,10 @@ export type Order = {
 // than money — the balance is only actually deducted at checkout.
 // Used by PointOfSale.tsx, Checkout.tsx and StationBoard.tsx — the "two screens
 // read the same visit" the note at the top refers to.
+// LOCAL-FIRST (2026-08-19): `id` is a UUID string now — see the note on
+// Customer above. `locker` keeps a plain number id: Locker didn't migrate.
 export type Visit = {
-  id: number;
+  id: string;
   checkInAt: string;
   customer: Customer;
   locker: Locker;
@@ -137,7 +151,7 @@ export type Visit = {
   // Set only when SOMEONE ELSE's pass is paying for this entry — a member
   // bringing a friend. Null means the guest used their own, or none at all.
   // The balance isn't touched until check-out either way.
-  passUsedCustomer: { id: number; firstName: string; lastName: string } | null;
+  passUsedCustomer: { id: string; firstName: string; lastName: string } | null;
 };
 // A dining table. Nothing points at it and it points at nothing — it exists
 // only to say whether there's somewhere to sit.

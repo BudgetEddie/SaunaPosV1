@@ -53,8 +53,12 @@ const socket = io(SOCKET_URL);
 // from a ticket that's already being cooked — it's flagged, so the cook can
 // see it was cancelled and stop making it, then dismiss the card themselves.
 type OrderItemRow = { id: number; name: string; note: string | null; canceled: boolean };
+// LOCAL-FIRST (2026-08-19): both id fields below (the order's own, and
+// visit.id) are UUID strings now — see the note atop client/src/types.ts.
+// OrderItemRow.id (used above for `items`) is unaffected: OrderItem didn't
+// migrate.
 type KitchenOrder = {
-  id: number;
+  id: string;
   status: string;
   createdAt: string;
   items: OrderItemRow[];
@@ -62,7 +66,7 @@ type KitchenOrder = {
   // at their locker. Null on most tickets, and always null for takeout.
   table: { number: string } | null;
   visit: {
-    id: number;
+    id: string;
     // STAY or TAKEOUT. A takeout ticket has no customer and no locker — it's
     // called out by number instead, and it's going in a bag rather than being
     // carried to a bench.
@@ -178,7 +182,7 @@ function StationBoard({ station }: { station: Station }) {
   // ---- the "New Order" composer ----
   const [composerOpen, setComposerOpen] = useState(false);
   const [guestQuery, setGuestQuery] = useState("");           // guest search box
-  const [guestVisitId, setGuestVisitId] = useState<number | null>(null);
+  const [guestVisitId, setGuestVisitId] = useState<string | null>(null);
   const [cart, setCart] = useState<Cart>({});
 
   // Redrawn every 20 seconds so the "waiting 6 min" clocks on each ticket

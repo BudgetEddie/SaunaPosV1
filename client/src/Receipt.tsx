@@ -46,8 +46,12 @@ const METHOD_LABELS: Record<string, string> = {
 // What the server sends back for one bill. This screen declares its own shape
 // rather than using types.ts, because it needs fields the shared Bill doesn't
 // carry — the refund stamps and who the guest was.
+//
+// LOCAL-FIRST (2026-08-19): id is a UUID string now, not an auto-incrementing
+// number — see the note atop client/src/types.ts. lineItems keep their plain
+// number ids; BillLineItem didn't migrate.
 type BillData = {
-  id: number;
+  id: string;
   taxRate: number;
   paymentMethod: string | null;
   paidAt: string | null;
@@ -88,7 +92,10 @@ function Row({ left, right, bold }: { left: string; right: string; bold?: boolea
 const dashed: React.CSSProperties = { borderTop: "1px dashed #000", margin: "8px 0" };
 
 function Receipt() {
-  // Pull the number out of the address: /receipt/123 gives billId = "123".
+  // Pull the id out of the address: /receipt/<uuid> gives billId that uuid as
+  // text. useParams() always hands back strings regardless, so this needed no
+  // code change when Bill.id became a UUID (2026-08-19) — only this comment,
+  // which used to say "123" back when bill ids were small numbers.
   const { billId } = useParams();
   const [bill, setBill] = useState<BillData | null>(null);
 
