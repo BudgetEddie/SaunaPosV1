@@ -465,7 +465,7 @@ function CustomerDirectory() {
   // notices anything changed. Only first name, last name and gender are
   // required; gender because it decides which locker pool they can use.
   const newCustomerForm = (
-    <form onSubmit={addCustomer} style={{ ...PANEL, padding: 20, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px 20px" }}>
+    <form onSubmit={addCustomer} className="cd-profile" style={{ ...PANEL, padding: 20, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "18px 22px" }}>
       <Field label="First name">
         <input className="cd-in" value={newCustomer.firstName} onChange={(e) => setNewCustomer({ ...newCustomer, firstName: e.target.value })} required />
       </Field>
@@ -652,7 +652,7 @@ function CustomerDirectory() {
             One thing the server won't allow: changing gender while the guest
             is mid-visit, since they'd be holding a locker from the wrong pool. */}
         {editing ? (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "18px 28px" }}>
+          <div className="cd-profile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "18px 22px" }}>
             <Field label="First name">
               <input className="cd-in" value={draft.firstName} onChange={(e) => setDraft({ ...draft, firstName: e.target.value })} />
             </Field>

@@ -284,6 +284,53 @@ body {
   border-color: #7a6a53;
 }
 
+/* THE CUSTOMER PROFILE FORM — the "+ New customer" panel and the Edit view.
+   Both carry className="cd-profile" in CustomerDirectory.tsx; these rules
+   reach only inside those two forms, so no other screen is affected.
+
+   Why these overrides exist:
+
+   box-sizing   .cd-in above is width:100% with padding and a border, and this
+                app has no global reset. Without this line every box measures
+                26px WIDER than the column it sits in, so the two columns run
+                into each other and look like they overlap. .ov-in and .dlg-in
+                further down already carry this for the same reason.
+
+   height       a dropdown and a text box work out different heights on their
+                own, which leaves a row looking uneven. One height settles it.
+
+   appearance   turns OFF the grey dropdown the operating system draws, so the
+                box below is ours. The arrow it also removes is replaced by the
+                chevron drawn underneath — the same soft brown, 2px round-capped
+                stroke as the search icon in CustomerDirectory.tsx.
+
+   color-scheme the top of this file says "light dark", which lets a Mac in dark
+                mode paint the dropdown's open list and the date picker dark
+                against a cream app. Forced to light here only. */
+.cd-profile .cd-in,
+.cd-profile .cd-ta {
+  box-sizing: border-box;
+  color-scheme: light;
+}
+.cd-profile .cd-in {
+  height: 42px;
+  padding: 0 12px;
+}
+.cd-profile select.cd-in {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  /* Room on the right so the text never runs under the chevron. */
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none'%3E%3Cpath d='M1.5 1.5 6 6l4.5-4.5' stroke='%23a89a86' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+}
+.cd-profile .cd-ta {
+  min-height: 84px;
+  padding: 10px 12px;
+}
+
 .cd-search {
   width: 100%;
   border: none;
