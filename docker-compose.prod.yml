@@ -48,6 +48,11 @@ services:
       # server/litestream.yml, or Mississauga's backup lands in Niagara's
       # folder. Nothing checks that for you.
       SITE_ID: ${SITE_ID:?set SITE_ID in the .env file next to this one — e.g. MISSISSAUGA}
+      # THE CLOCK THE TRADING DAY RUNS ON. Without this the container runs UTC
+      # while the host runs Eastern, so the daily report (index.ts ~1932) and the
+      # takeout list (~2401) roll over at 8pm local, and every evening sale lands
+      # on the following day. Confirmed broken on the box 2026-08-24, fixed here.
+      TZ: America/Toronto
       PORT: 4000
       # DATABASE_URL is deliberately NOT set here. It's baked into the
       # Dockerfile, because it has to agree with the path in litestream.yml and
