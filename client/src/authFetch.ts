@@ -58,6 +58,11 @@ export type LoggedInUser = { username: string; displayName: string; role: string
 export async function authFetch(path: string, options: RequestInit = {}, override?: string | null) {
   // The wristband we were given at sign-in. Missing on the login screen.
   const token = localStorage.getItem("token");
+  // WHICH SITE this terminal is set to. The switcher in Shell.tsx writes it to
+  // localStorage; the server reads it (see currentLocation) to scope the menu
+  // and settings. Absent on a fresh terminal, in which case the server falls
+  // back to the first location — so this is safe to leave unset.
+  const locationId = localStorage.getItem("locationId");
   const res = await fetch(`${API}${path}`, {
     ...options,
     headers: {
@@ -66,6 +71,7 @@ export async function authFetch(path: string, options: RequestInit = {}, overrid
       // "Bearer" is just the standard word for "the holder of this token" —
       // the server slices it off and checks what follows.
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(locationId ? { "X-Location-Id": locationId } : {}),
       // Deliberately passed by hand rather than stashed somewhere global: a
       // single-use approval would otherwise be spent by whichever request
       // happened to fire next — a socket refresh, a background reload —

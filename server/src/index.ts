@@ -381,23 +381,58 @@ async function getSettings() {
 }
 
 // ---- The current location -------------------------------------------------
-// STAGE 1 of multi-location: there is exactly one site, so "the current
-// location" is simply the single active one. This helper is the ONE place that
-// decides what "here" means, so Stage 2 — a location picker, or a location
-// stamped into each staff member's token — is a single function to change
-// rather than a hunt through every menu and checkout query.
+// The ONE place that decides what "here" means. Every menu, settings and
+// checkout query goes through it, so which site a request belongs to is a
+// single function to reason about rather than a rule scattered everywhere.
+//
+// How it decides (Stage 2a): the terminal tells us. The client attaches the
+// selected location as an "X-Location-Id" header on every request — see the
+// location switcher in Shell.tsx and authFetch.ts. An id we don't recognise, or
+// no header at all, falls back to the first active location, which is what keeps
+// a one-location business — and Login, which sends no header — working unchanged.
 //
 // Like getSettings(), it guarantees a row comes back: a fresh database with no
 // location yet gets "Mississauga" created on the spot, so nothing downstream
 // ever has to handle there being no location.
-async function currentLocation() {
-  const existing = await prisma.location.findFirst({
+async function currentLocation(req?: Request) {
+  const active = await prisma.location.findMany({
     where: { active: true },
     orderBy: { id: "asc" },
   });
-  if (existing) return existing;
-  return prisma.location.create({ data: { name: "Mississauga" } });
+  if (active.length === 0) {
+    return prisma.location.create({ data: { name: "Mississauga" } });
+  }
+  const requestedId = Number(req?.header("X-Location-Id"));
+  return active.find((l) => l.id === requestedId) ?? active[0];
 }
+
+// ---- Locations ------------------------------------------------------------
+// The list every terminal's switcher reads, and the one way to add a site.
+// There's no delete: a location that ever traded has history hanging off it, so
+// retiring one is a Stage 2 job (flip `active` false), never a deletion.
+// ---------------------------------------------------------------------------
+
+// Every active site, for the switcher. Any signed-in user can read it — a
+// terminal has to know its choices before anyone has proved they're an admin.
+app.get("/locations", async (_req, res) => {
+  res.json(await prisma.location.findMany({ where: { active: true }, orderBy: { id: "asc" } }));
+});
+
+// Add a site. ADMIN ONLY. A new location starts with an empty menu — the admin
+// switches to it and builds one, exactly as this one was built.
+app.post("/locations", requireAdmin, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name) return res.status(400).json({ error: "name is required" });
+  try {
+    const location = await prisma.location.create({ data: { name } });
+    io.emit("locations:updated", {});
+    res.status(201).json(location);
+  } catch {
+    // Names are unique. As elsewhere, ANY failure is reported as a clash — far
+    // and away the likeliest cause.
+    res.status(409).json({ error: `A location named "${name}" already exists` });
+  }
+});
 
 // ---- The cash discount ----------------------------------------------------
 //
@@ -455,8 +490,8 @@ function cashDiscountFor(
 // current location's cash discount merged in. The client reads all four off one
 // object — see MenuPage.tsx — so the response SHAPE is unchanged even though the
 // cash discount now lives on Location, not Settings.
-app.get("/settings", async (_req, res) => {
-  const [settings, location] = await Promise.all([getSettings(), currentLocation()]);
+app.get("/settings", async (req, res) => {
+  const [settings, location] = await Promise.all([getSettings(), currentLocation(req)]);
   res.json({
     ...settings,
     cashDiscount: location.cashDiscount,
@@ -511,7 +546,7 @@ app.put("/settings", requireAdmin, async (req, res) => {
   //
   // Compared against whichever value is NOT being changed, read from the
   // location the discount now lives on.
-  const location = await currentLocation();
+  const location = await currentLocation(req);
   const nextDiscount = locationData.cashDiscount ?? location.cashDiscount;
   const nextMinEntry = locationData.cashDiscountMinEntry ?? location.cashDiscountMinEntry;
   if (nextDiscount > 0 && nextMinEntry <= nextDiscount) {
@@ -557,10 +592,10 @@ app.put("/settings", requireAdmin, async (req, res) => {
 
 // The whole menu in one go: categories, alphabetical, each with its items
 // nested inside. This one query feeds the till, the kitchen and the editor.
-app.get("/categories", async (_req, res) => {
+app.get("/categories", async (req, res) => {
   // Only THIS location's menu. With one site that's every category; the moment a
   // second site exists, each till sees only its own menu without another change.
-  const location = await currentLocation();
+  const location = await currentLocation(req);
   const categories = await prisma.category.findMany({
     where: { locationId: location.id },
     include: { items: { orderBy: { name: "asc" } } },
@@ -592,7 +627,7 @@ app.post("/categories", requireAdmin, async (req, res) => {
   // Anything that isn't explicitly merchandise is treated as food and drink.
   const menuGroup = group === "MERCH_SERVICE" ? "MERCH_SERVICE" : "FOOD_DRINK";
   // A new section joins the current location's menu.
-  const location = await currentLocation();
+  const location = await currentLocation(req);
   try {
     const category = await prisma.category.create({
       data: {
@@ -1263,7 +1298,7 @@ app.get("/visits/:visitId/cash-discount", async (req, res) => {
   }
   // The cash discount is per-location now, so it's the location — not the
   // house settings — that carries the numbers cashDiscountFor needs.
-  res.json(cashDiscountFor(visit.bill.lineItems, await currentLocation()));
+  res.json(cashDiscountFor(visit.bill.lineItems, await currentLocation(req)));
 });
 
 // Flag a locker as broken, or return it to service.
@@ -2193,7 +2228,7 @@ app.post("/check-out", async (req, res) => {
 
   // The cash discount is per-location, so the location carries the numbers the
   // discount rule reads at checkout below.
-  const location = await currentLocation();
+  const location = await currentLocation(req);
 
   const { updatedVisit, updatedLocker, updatedBill, updatedCustomer } = await prisma.$transaction(async (tx) => {
     // 1. End the visit. Stamping the time is what makes it stop being "active"
