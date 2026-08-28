@@ -191,6 +191,7 @@ live in `client/src/types.ts`.
 | `prisma/schema.prisma` | The database's shape — every table and field. |
 | `prisma/seed.ts` | Sets up the 120 lockers. **Erases visits, bills and kitchen orders** — first-time setup only. Refuses to run once the database has any visits, unless given `--force-wipe`. |
 | `prisma/seed-users.ts` | Creates the staff logins. Also how you reset a forgotten password. |
+| `prisma/seed-menu.ts` | The whole menu as code — every section and item. **Safe to re-run**: adds only what's missing and never overwrites a price. |
 | `prisma/fix-menu.ts` | A one-time repair script that has already been run. Kept as history. |
 | `prisma/migrations/` | The dated history of every database shape change. |
 
@@ -236,7 +237,13 @@ cd server
 npx prisma migrate deploy    # build the tables
 npx ts-node prisma/seed.ts   # create the 120 lockers — WIPES visits, bills and kitchen orders
 npx ts-node prisma/seed-users.ts   # create the staff logins
+npx ts-node prisma/seed-menu.ts    # create the menu — safe to re-run, deletes nothing
 ```
+
+`seed-menu.ts` is the odd one out in a good way: it's the only seed safe to run on a till
+that's already trading. It adds sections and items that are missing and leaves everything
+else — including prices someone corrected at the till — exactly as it found them. Use it to
+set up a new install, or to top up a menu that's missing a section.
 
 Edit the passwords at the top of `seed-users.ts` before running it. Re-running that one file is
 also how you reset a password later — it's safe to run repeatedly, unlike `seed.ts`.
