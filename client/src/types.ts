@@ -20,6 +20,10 @@
 // the same description of it — change a field here and both follow.
 // ============================================================================
 
+// A site — one bathhouse. The switcher in Shell.tsx lists these and remembers
+// which one this terminal is set to; the server scopes the menu to it.
+export type Location = { id: number; name: string; active: boolean };
+
 // A guest. `visitPassBalance` is how many prepaid entries they have banked —
 // see the note on MenuItem below for how those are bought and spent.
 export type Customer = {

@@ -18,10 +18,12 @@
 //   own localStorage notepad.
 // ============================================================================
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import Login from "./Login.tsx";
-import { type LoggedInUser } from "./authFetch.ts";
+import { authFetch, type LoggedInUser } from "./authFetch.ts";
+import { type Location } from "./types.ts";
+import { useDialog } from "./DialogProvider.tsx";
 import { soundEnabled, setSoundEnabled } from "./clickSound.ts";
 
 function Shell() {
@@ -39,6 +41,61 @@ function Shell() {
   // The tap sound, remembered per terminal like the till's Cards/List choice.
   // A quiet room and an eight-hour shift is exactly when someone wants this off.
   const [sound, setSound] = useState(soundEnabled());
+
+  // THE SITES this business runs, for the location switcher below. Fetched once
+  // signed in — never on the login screen, since a token-less /locations call
+  // would 401 and bounce us into a reload loop. `user` in the dependency list
+  // is what makes it run the moment someone signs in.
+  const [locations, setLocations] = useState<Location[]>([]);
+  const dialog = useDialog();
+  useEffect(() => {
+    if (!user) return;
+    authFetch("/locations")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setLocations)
+      .catch(() => {});
+  }, [user]);
+
+  // Which site THIS terminal is set to, remembered in the browser's notepad. An
+  // unset terminal shows the first location — the same one the server falls back
+  // to — so the picture on screen matches the data behind it.
+  const storedLocationId = localStorage.getItem("locationId");
+  const selectedLocationId = storedLocationId ? Number(storedLocationId) : locations[0]?.id ?? null;
+
+  // Switching is a per-terminal setting, so it's stored and then the page is
+  // reloaded — the bluntest possible way to make every screen re-fetch its data
+  // under the new site, with no chance of one screen forgetting to.
+  const switchLocation = (id: number) => {
+    localStorage.setItem("locationId", String(id));
+    window.location.reload();
+  };
+
+  // ADMIN adds a site. It starts with an empty menu, so we switch straight to it
+  // — the admin's next move is always to start building that menu.
+  const addLocation = async () => {
+    const name = await dialog.askText("Name the new location", {
+      title: "Add a location",
+      placeholder: "e.g. Toronto",
+      confirmLabel: "Create",
+    });
+    if (name === null) return; // cancelled, as opposed to left blank
+    if (!name.trim()) {
+      await dialog.say("A location needs a name.");
+      return;
+    }
+    const res = await authFetch("/locations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      await dialog.say(err.error ?? "Couldn't add that location.");
+      return;
+    }
+    const created = await res.json();
+    switchLocation(created.id);
+  };
 
   // THE GATE. Nobody signed in means the login page is all that exists — the
   // sidebar and the six screens below are never even built.
@@ -74,8 +131,41 @@ function Shell() {
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#efe9df", color: "#2b2620", fontFamily: "'Hanken Grotesk', system-ui, sans-serif" }}>
       <aside style={{ width: 190, background: "#332c24", color: "#f4efe7", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh", flexShrink: 0 }}>
-        <div style={{ padding: "22px 18px 16px", fontWeight: 800, letterSpacing: ".22em", fontSize: 13 }}>
+        <div style={{ padding: "22px 18px 12px", fontWeight: 800, letterSpacing: ".22em", fontSize: 13 }}>
           BANYA#3
+        </div>
+
+        {/* THE LOCATION SWITCHER. Which site this terminal is set to. A single
+            location shows as a plain label — there's nothing to choose — and
+            only turns into a dropdown once a second site exists. Admins get the
+            "add" link in either case, since that's how the second site is born. */}
+        <div style={{ padding: "0 16px 14px" }}>
+          {locations.length > 1 ? (
+            <select
+              value={selectedLocationId ?? ""}
+              onChange={(e) => switchLocation(Number(e.target.value))}
+              style={{ width: "100%", background: "#221d17", color: "#f4efe7", border: "1px solid rgba(244,239,231,.25)", borderRadius: 7, padding: "7px 9px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}
+            >
+              {locations.map((l) => (
+                // Dark option text would vanish on the dark control on some
+                // systems; the near-black keeps the open list readable.
+                <option key={l.id} value={l.id} style={{ color: "#2b2620" }}>{l.name}</option>
+              ))}
+            </select>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: "rgba(244,239,231,.85)" }}>
+              <span aria-hidden>📍</span>
+              {locations[0]?.name ?? "…"}
+            </div>
+          )}
+          {isAdmin && (
+            <div
+              onClick={addLocation}
+              style={{ marginTop: 8, fontSize: 11.5, fontWeight: 600, color: "rgba(244,239,231,.5)", cursor: "pointer" }}
+            >
+              + Add location
+            </div>
+          )}
         </div>
         {/* Sidebar links. NavLink is a router link that knows whether it's the
             page you're currently on, and adds class "active" to itself if so —
