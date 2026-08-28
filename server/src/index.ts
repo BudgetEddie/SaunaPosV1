@@ -380,6 +380,25 @@ async function getSettings() {
   });
 }
 
+// ---- The current location -------------------------------------------------
+// STAGE 1 of multi-location: there is exactly one site, so "the current
+// location" is simply the single active one. This helper is the ONE place that
+// decides what "here" means, so Stage 2 — a location picker, or a location
+// stamped into each staff member's token — is a single function to change
+// rather than a hunt through every menu and checkout query.
+//
+// Like getSettings(), it guarantees a row comes back: a fresh database with no
+// location yet gets "Mississauga" created on the spot, so nothing downstream
+// ever has to handle there being no location.
+async function currentLocation() {
+  const existing = await prisma.location.findFirst({
+    where: { active: true },
+    orderBy: { id: "asc" },
+  });
+  if (existing) return existing;
+  return prisma.location.create({ data: { name: "Mississauga" } });
+}
+
 // ---- The cash discount ----------------------------------------------------
 //
 // Guests who settle up in cash get money off their ENTRY charge. This is the
@@ -432,24 +451,31 @@ function cashDiscountFor(
   };
 }
 
-// The house tax rate and default entry charge. Any signed-in user can read it —
-// the till needs it to price custom charges.
+// The house tax rate and default entry charge (from Settings, shared), plus the
+// current location's cash discount merged in. The client reads all four off one
+// object — see MenuPage.tsx — so the response SHAPE is unchanged even though the
+// cash discount now lives on Location, not Settings.
 app.get("/settings", async (_req, res) => {
-  res.json(await getSettings());
+  const [settings, location] = await Promise.all([getSettings(), currentLocation()]);
+  res.json({
+    ...settings,
+    cashDiscount: location.cashDiscount,
+    cashDiscountMinEntry: location.cashDiscountMinEntry,
+  });
 });
 
 // Change the settings. ADMIN ONLY. Called from client/src/MenuPage.tsx.
 //
 // This only affects things priced FROM NOW ON. Existing menu items keep their
 // own rates, and charges already on bills keep the rate they were sold at.
+//
+// The fields are split by where they now live: the tax rate and default
+// admission are house-wide (Settings), while the cash discount is per-location
+// (Location). The browser still sends and receives them as one bundle.
 app.put("/settings", requireAdmin, async (req, res) => {
   const { taxRate, defaultAdmissionItemId, cashDiscount, cashDiscountMinEntry } = req.body;
-  const data: {
-    taxRate?: number;
-    defaultAdmissionItemId?: number | null;
-    cashDiscount?: number;
-    cashDiscountMinEntry?: number;
-  } = {};
+  const settingsData: { taxRate?: number; defaultAdmissionItemId?: number | null } = {};
+  const locationData: { cashDiscount?: number; cashDiscountMinEntry?: number } = {};
 
   // Stored as a decimal (0.13), not a percentage (13). The client does that
   // conversion before sending; this guards against a stray 13 arriving and
@@ -458,10 +484,10 @@ app.put("/settings", requireAdmin, async (req, res) => {
     if (typeof taxRate !== "number" || taxRate < 0 || taxRate > 1) {
       return res.status(400).json({ error: "taxRate must be a number between 0 and 1 (e.g. 0.13 for 13%)" });
     }
-    data.taxRate = taxRate;
+    settingsData.taxRate = taxRate;
   }
   if (defaultAdmissionItemId !== undefined) {
-    data.defaultAdmissionItemId = defaultAdmissionItemId === null ? null : Number(defaultAdmissionItemId);
+    settingsData.defaultAdmissionItemId = defaultAdmissionItemId === null ? null : Number(defaultAdmissionItemId);
   }
   // Both in dollars. Negatives are refused outright — a "discount" that added
   // money to the bill is never what anyone meant.
@@ -469,13 +495,13 @@ app.put("/settings", requireAdmin, async (req, res) => {
     if (typeof cashDiscount !== "number" || !Number.isFinite(cashDiscount) || cashDiscount < 0) {
       return res.status(400).json({ error: "The cash discount must be a number of dollars, or 0 to switch it off" });
     }
-    data.cashDiscount = cashDiscount;
+    locationData.cashDiscount = cashDiscount;
   }
   if (cashDiscountMinEntry !== undefined) {
     if (typeof cashDiscountMinEntry !== "number" || !Number.isFinite(cashDiscountMinEntry) || cashDiscountMinEntry < 0) {
       return res.status(400).json({ error: "The minimum entry fee must be a number of dollars" });
     }
-    data.cashDiscountMinEntry = cashDiscountMinEntry;
+    locationData.cashDiscountMinEntry = cashDiscountMinEntry;
   }
 
   // The minimum has to stay above the discount, and this is the check that
@@ -483,11 +509,11 @@ app.put("/settings", requireAdmin, async (req, res) => {
   // relies on a qualifying entry charge always being bigger than the money
   // coming off it, which is exactly what this guarantees.
   //
-  // Compared against whichever value is NOT being changed, so raising the
-  // discount past a minimum set weeks ago is caught too.
-  const existing = await getSettings();
-  const nextDiscount = data.cashDiscount ?? existing.cashDiscount;
-  const nextMinEntry = data.cashDiscountMinEntry ?? existing.cashDiscountMinEntry;
+  // Compared against whichever value is NOT being changed, read from the
+  // location the discount now lives on.
+  const location = await currentLocation();
+  const nextDiscount = locationData.cashDiscount ?? location.cashDiscount;
+  const nextMinEntry = locationData.cashDiscountMinEntry ?? location.cashDiscountMinEntry;
   if (nextDiscount > 0 && nextMinEntry <= nextDiscount) {
     return res.status(400).json({
       error: `The minimum entry fee must be more than the discount — otherwise a $${nextDiscount.toFixed(2)} discount could take an entry charge to zero or below.`,
@@ -496,14 +522,27 @@ app.put("/settings", requireAdmin, async (req, res) => {
 
   const settings = await prisma.settings.upsert({
     where: { id: 1 },
-    update: data,
-    create: { id: 1, taxRate: data.taxRate ?? 0.13, defaultAdmissionItemId: data.defaultAdmissionItemId ?? null },
+    update: settingsData,
+    create: { id: 1, taxRate: settingsData.taxRate ?? 0.13, defaultAdmissionItemId: settingsData.defaultAdmissionItemId ?? null },
   });
+  // Only touch the location if a cash-discount field was actually sent.
+  const updatedLocation =
+    Object.keys(locationData).length > 0
+      ? await prisma.location.update({ where: { id: location.id }, data: locationData })
+      : location;
+
+  // Hand back the same merged shape GET returns, so the browser sees its own
+  // edit reflected without a second fetch.
+  const merged = {
+    ...settings,
+    cashDiscount: updatedLocation.cashDiscount,
+    cashDiscountMinEntry: updatedLocation.cashDiscountMinEntry,
+  };
   // Tell every terminal. (Nothing currently listens for this one — the Menu
   // screen is the only place settings appear, and it already knows. Kept
   // because it costs nothing and completes the pattern.)
-  io.emit("settings:updated", settings);
-  res.json(settings);
+  io.emit("settings:updated", merged);
+  res.json(merged);
 });
 
 // ---------------------------------------------------------------------------
@@ -519,7 +558,11 @@ app.put("/settings", requireAdmin, async (req, res) => {
 // The whole menu in one go: categories, alphabetical, each with its items
 // nested inside. This one query feeds the till, the kitchen and the editor.
 app.get("/categories", async (_req, res) => {
+  // Only THIS location's menu. With one site that's every category; the moment a
+  // second site exists, each till sees only its own menu without another change.
+  const location = await currentLocation();
   const categories = await prisma.category.findMany({
+    where: { locationId: location.id },
     include: { items: { orderBy: { name: "asc" } } },
     orderBy: { name: "asc" },
   });
@@ -548,9 +591,12 @@ app.post("/categories", requireAdmin, async (req, res) => {
   if (!name) return res.status(400).json({ error: "name is required" });
   // Anything that isn't explicitly merchandise is treated as food and drink.
   const menuGroup = group === "MERCH_SERVICE" ? "MERCH_SERVICE" : "FOOD_DRINK";
+  // A new section joins the current location's menu.
+  const location = await currentLocation();
   try {
     const category = await prisma.category.create({
       data: {
+        locationId: location.id,
         name,
         group: menuGroup,
         // Food & drinks is what gets made to order — that's the whole rule for
@@ -563,10 +609,11 @@ app.post("/categories", requireAdmin, async (req, res) => {
     io.emit("menu:updated", {});
     res.status(201).json(category);
   } catch {
-    // Category names have to be unique, and a clash is far and away the most
-    // likely failure. Worth knowing: this reports ANY failure as a duplicate
-    // name, so a different database problem would show a misleading message.
-    res.status(409).json({ error: `A category named "${name}" already exists` });
+    // Names are unique WITHIN a location now, and a clash is far and away the
+    // most likely failure. Worth knowing: this reports ANY failure as a
+    // duplicate name, so a different database problem would show a misleading
+    // message.
+    res.status(409).json({ error: `A category named "${name}" already exists at this location` });
   }
 });
 
@@ -1214,7 +1261,9 @@ app.get("/visits/:visitId/cash-discount", async (req, res) => {
   if (!visit || visit.checkOutAt || !visit.bill) {
     return res.status(404).json({ error: "Active visit not found" });
   }
-  res.json(cashDiscountFor(visit.bill.lineItems, await getSettings()));
+  // The cash discount is per-location now, so it's the location — not the
+  // house settings — that carries the numbers cashDiscountFor needs.
+  res.json(cashDiscountFor(visit.bill.lineItems, await currentLocation()));
 });
 
 // Flag a locker as broken, or return it to service.
@@ -2142,7 +2191,9 @@ app.post("/check-out", async (req, res) => {
     }
   }
 
-  const settings = await getSettings();
+  // The cash discount is per-location, so the location carries the numbers the
+  // discount rule reads at checkout below.
+  const location = await currentLocation();
 
   const { updatedVisit, updatedLocker, updatedBill, updatedCustomer } = await prisma.$transaction(async (tx) => {
     // 1. End the visit. Stamping the time is what makes it stop being "active"
@@ -2174,7 +2225,7 @@ app.post("/check-out", async (req, res) => {
         where: { visitId },
         include: { lineItems: true },
       });
-      const discount = bill ? cashDiscountFor(bill.lineItems, settings) : null;
+      const discount = bill ? cashDiscountFor(bill.lineItems, location) : null;
       if (bill && discount) {
         await tx.billLineItem.create({
           data: {
