@@ -498,6 +498,12 @@ body {
    --------------------------------------------------------------------------- */
 
 .mn-in {
+  /* Same trap as .cd-in above, and the reason the item editor's name, price and
+     description boxes used to spill past the panel: width:100% plus this
+     padding and border measures 27px WIDER than the column without it. The
+     price and tax boxes sit in a two-column grid, so they overlapped each
+     other as well as overflowing. */
+  box-sizing: border-box;
   width: 100%;
   border: 1.5px solid #d8cebc;
   outline: none;
