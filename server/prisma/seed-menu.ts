@@ -51,11 +51,19 @@ type SeedItem = {
   // Choosing this SPENDS one of the guest's prepaid entries. Only the pass
   // admission has this. Never set both on the same item — they are opposites.
   redeemsPass?: boolean;
+  // Whether selling this puts a card on its section's board. Defaults to true,
+  // and only ever turns tickets OFF — the section decides whether a ticket is
+  // made at all. Set false for things nobody has to make: a can of pop is a
+  // drink, but a ticket for it is noise the bartender has to clear.
+  sendsToKitchen?: boolean;
 };
 
 type SeedCategory = {
   name: string;
   group: MenuGroup;
+  // WHICH BOARD this section's tickets appear on. Only meaningful on
+  // FOOD_DRINK — merchandise prints nothing, so its station is inert.
+  station: Station;
   // Picking anything in this section REPLACES the guest's entry charge instead
   // of adding to their tab. True for entry charges and nothing else — a hat in
   // an admission section would wipe out somebody's entry fee.
@@ -64,10 +72,11 @@ type SeedCategory = {
 };
 
 // ---------------------------------------------------------------------------
-// THE MENU.
+// THE MENU. Eleven sections, and which board each one prints on:
 //
-// Seven sections. The five FOOD_DRINK ones print tickets on the kitchen board;
-// the two MERCH_SERVICE ones print nothing, because nobody has to cook a hat.
+//   KITCHEN   Soups, Cold Apps / Zakuski, Hot Mains, Baked & Sweet, Extras
+//   BAR       Cocktails, Spirits & Shots, Beer & Wine, Non-Alcoholic
+//   nothing   Admissions, Extras & Retail — merchandise, nobody cooks a hat
 //
 // ⚠️  SEVEN ITEMS ARE PRICED $5 AS A PLACEHOLDER — akresh, cheb, plov, pork,
 //     salo, salty fish and xsalty were supplied without a price. They are
@@ -77,6 +86,7 @@ const MENU: SeedCategory[] = [
   {
     name: "Soups",
     group: MenuGroup.FOOD_DRINK,
+    station: Station.KITCHEN,
     isAdmission: false,
     items: [
       { name: "borcht", price: 12 },
@@ -88,6 +98,7 @@ const MENU: SeedCategory[] = [
   {
     name: "Cold Apps / Zakuski",
     group: MenuGroup.FOOD_DRINK,
+    station: Station.KITCHEN,
     isAdmission: false,
     items: [
       { name: "salo", price: 5 },        // placeholder price
@@ -102,6 +113,7 @@ const MENU: SeedCategory[] = [
   {
     name: "Hot Mains",
     group: MenuGroup.FOOD_DRINK,
+    station: Station.KITCHEN,
     isAdmission: false,
     items: [
       { name: "beef", price: 23 },
@@ -125,6 +137,7 @@ const MENU: SeedCategory[] = [
   {
     name: "Baked & Sweet",
     group: MenuGroup.FOOD_DRINK,
+    station: Station.KITCHEN,
     isAdmission: false,
     items: [
       { name: "cheb", price: 5 },        // placeholder price
@@ -135,13 +148,95 @@ const MENU: SeedCategory[] = [
   {
     name: "Extras",
     group: MenuGroup.FOOD_DRINK,
+    station: Station.KITCHEN,
     isAdmission: false,
     items: [{ name: "extra", price: 6 }],
   },
+
+  // --- THE BAR ------------------------------------------------------------
+  // The four sections below are the only ones that go to the BAR board. They
+  // are FOOD_DRINK like the food, which is what makes them print a ticket at
+  // all; `station` is what sends that ticket to the bartender rather than the
+  // cook. Get the group wrong and the station is ignored entirely.
+  {
+    name: "Cocktails",
+    group: MenuGroup.FOOD_DRINK,
+    station: Station.BAR,
+    isAdmission: false,
+    items: [
+      { name: "Amaretto Sour", price: 15 },
+      { name: "Black Russian", price: 13 },
+      { name: "Bloody [Mary/Caesar]", price: 15 },
+      { name: "Blushing", price: 15 },
+      { name: "Cocktail Regular", price: 13 },
+      { name: "Cocktail Signature", price: 15 },
+      { name: "Dacha Lemonade", price: 15 },
+      { name: "Honey Bison", price: 15 },
+      { name: "Julius", price: 15 },
+      // Not the same thing as plain `kombucha` in Non-Alcoholic below — this
+      // one is a $13 cocktail. Both are on the menu on purpose.
+      { name: "Komboucha Storm", price: 13 },
+      { name: "Mint Moomin", price: 15 },
+      { name: "Moscow Martini", price: 15 },
+      { name: "moscow mule", price: 15 },
+      { name: "Negroni", price: 13 },
+      { name: "Red Orchard", price: 15 },
+      { name: "white Russian", price: 13 },
+    ],
+  },
+  {
+    name: "Spirits & Shots",
+    group: MenuGroup.FOOD_DRINK,
+    station: Station.BAR,
+    isAdmission: false,
+    items: [
+      { name: "Liquor Basic", price: 9 },
+      { name: "Liquor Regular", price: 11 },
+      { name: "Liquor Signature", price: 12 },
+      { name: "liqueur infusion", price: 9 },
+      { name: "vodka", price: 6 },
+      { name: "vodka signature", price: 12 },
+      { name: "Special shot", price: 6 },
+      { name: "Special shot deal", price: 16 },
+    ],
+  },
+  {
+    name: "Beer & Wine",
+    group: MenuGroup.FOOD_DRINK,
+    station: Station.BAR,
+    isAdmission: false,
+    items: [
+      { name: "draft", price: 9 },
+      { name: "half pint", price: 5 },
+      { name: "Sparkling wine", price: 60 },
+      // "vine", not "wine" — spelled as supplied, and confirmed deliberate.
+      { name: "vine basic", price: 9 },
+      { name: "vine regular", price: 11 },
+    ],
+  },
+  {
+    name: "Non-Alcoholic",
+    group: MenuGroup.FOOD_DRINK,
+    station: Station.BAR,
+    isAdmission: false,
+    items: [
+      // The four taken straight from a fridge print NO ticket. Nobody has to
+      // make them, so a card on the bar board is just something to clear.
+      // kompot and turkish coffee are made to order, so they still print.
+      { name: "borjomi", price: 7, sendsToKitchen: false },
+      { name: "kombucha", price: 5, sendsToKitchen: false },
+      { name: "minwater", price: 8, sendsToKitchen: false },
+      { name: "pop or juice", price: 3, sendsToKitchen: false },
+      { name: "kompot", price: 7 },
+      { name: "turkish coffee", price: 6 },
+    ],
+  },
+
   {
     // THE ENTRY CHARGES. Nothing but entry charges belongs in here.
     name: "Admissions",
     group: MenuGroup.MERCH_SERVICE,
+    station: Station.KITCHEN,
     isAdmission: true,
     items: [
       { name: "adult admission", price: 65 },
@@ -156,6 +251,7 @@ const MENU: SeedCategory[] = [
   {
     name: "Extras & Retail",
     group: MenuGroup.MERCH_SERVICE,
+    station: Station.KITCHEN,
     isAdmission: false,
     items: [
       { name: "extra robe", price: 3 },
@@ -219,9 +315,9 @@ async function main() {
           // Food and drink is what gets made to order — that alone decides
           // whether selling something prints a ticket.
           isKitchen: section.group === MenuGroup.FOOD_DRINK,
-          // Inert on a section that prints nothing, which is why merchandise
-          // can carry KITCHEN without it meaning anything.
-          station: Station.KITCHEN,
+          // Which board that ticket lands on. Inert on a section that prints
+          // nothing, which is why merchandise can carry KITCHEN harmlessly.
+          station: section.station,
           isAdmission: section.isAdmission,
         },
       });
@@ -247,6 +343,9 @@ async function main() {
           taxRate: TAX,
           visitCredits: item.visitCredits ?? 0,
           redeemsPass: item.redeemsPass ?? false,
+          // Defaults to true — a ticket nobody needed is obvious and harmless,
+          // whereas a missing one leaves a guest waiting with no signal at all.
+          sendsToKitchen: item.sendsToKitchen ?? true,
         },
       });
       addedItems++;
