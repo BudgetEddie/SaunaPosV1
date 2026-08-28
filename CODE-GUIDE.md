@@ -224,6 +224,11 @@ cd client && npm run dev
 
 Then open the address the client prints, usually <http://localhost:5173>.
 
+That's this machine only. Putting a new version on the till at the shop is a different
+job — see [DEPLOY.md](DEPLOY.md). Worth knowing before you go looking: the two never share
+data. Database *shape* travels through the migration files in git; what's actually **in** the
+database — menu, customers, bills — never leaves the machine it was typed on.
+
 | What | Where |
 |---|---|
 | Client (what you look at) | http://localhost:5173 |
