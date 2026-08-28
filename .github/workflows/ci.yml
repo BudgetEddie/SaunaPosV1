@@ -1,0 +1,66 @@
+# =============================================================================
+# CONTINUOUS INTEGRATION — the automatic check on every pull request.
+#
+# WHAT IT IS
+#   GitHub runs this on each pull request (and on pushes to main) to confirm the
+#   code still typechecks, builds and lints before anyone merges it. It is a
+#   safety net, not a deploy: it builds the app but ships nothing.
+#
+#   There are no automated tests in the project yet, so this checks build health
+#   only. When tests are added, give each half an `npm test` and add a step here.
+#
+# THE TWO JOBS run in parallel, one per half of the app:
+#   server — generate the Prisma client, then typecheck-and-build (tsc)
+#   client — lint (oxlint), then typecheck-and-build (tsc -b && vite build)
+# =============================================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  server:
+    name: Server — typecheck & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      # The server imports types from the GENERATED Prisma client, so it must be
+      # generated before anything typechecks. This reads schema.prisma only — no
+      # database is contacted — but the datasource block references DATABASE_URL,
+      # so a throwaway value is supplied purely to satisfy that reference.
+      - run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      # `npm run build` is `tsc`, which both typechecks and emits — so a type
+      # error here fails the build, which is exactly the gate we want.
+      - run: npm run build
+
+  client:
+    name: Client — lint, typecheck & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      # `npm run build` is `tsc -b && vite build`, so this typechecks and builds
+      # the production bundle in one step.
+      - run: npm run build
