@@ -251,6 +251,11 @@ body {
 
 /* Every text box, dropdown and date field in the app. */
 .cd-in {
+  /* width:100% plus padding and a border would measure 27px WIDER than the
+     column without this, so the box spills past its container (as the takeout
+     "Name for the order" field once did). Kept on the base rule so every
+     .cd-in fits its column, not just the ones inside .cd-profile. */
+  box-sizing: border-box;
   width: 100%;
   border: 1.5px solid #d8cebc;
   outline: none;
@@ -267,6 +272,7 @@ body {
 }
 
 .cd-ta {
+  box-sizing: border-box;
   width: 100%;
   border: 1.5px solid #d8cebc;
   outline: none;
@@ -492,6 +498,10 @@ body {
    --------------------------------------------------------------------------- */
 
 .mn-in {
+  /* Same trap as .cd-in above, and the reason the item editor's name, price and
+     description boxes used to spill past the panel. The price and tax boxes sit
+     in a two-column grid, so they overlapped each other as well. */
+  box-sizing: border-box;
   width: 100%;
   border: 1.5px solid #d8cebc;
   outline: none;
