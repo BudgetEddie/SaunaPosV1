@@ -54,6 +54,11 @@ services:
       # on the following day. Confirmed broken on the box 2026-08-24, fixed here.
       TZ: America/Toronto
       PORT: 4000
+      # HOW MANY LOCKERS THIS BUILDING HAS, per gender — 30 means 60 in total.
+      # Only read by prisma/seed.ts when a site is first set up; it never
+      # changes a set of lockers that already exists. Sites differ, which is why
+      # it lives in the .env beside this file rather than baked into the image.
+      LOCKERS_PER_GENDER: ${LOCKERS_PER_GENDER:-30}
       # DATABASE_URL is deliberately NOT set here. It's baked into the
       # Dockerfile, because it has to agree with the path in litestream.yml and
       # one place to get that wrong is enough.

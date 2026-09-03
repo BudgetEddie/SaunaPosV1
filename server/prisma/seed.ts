@@ -1,5 +1,8 @@
 // ============================================================================
-// FIRST-TIME SETUP — creates the building's 120 lockers.
+// FIRST-TIME SETUP — creates this building's lockers.
+//
+//   How many is set per site by LOCKERS_PER_GENDER in the .env (default 30 each,
+//   so 60 in total). Mississauga is 30; another site sets its own.
 //
 // ⚠️  THIS ERASES DATA. It deletes every bill, every charge, every kitchen
 //     order and every visit before rebuilding the lockers. On a real till that
@@ -99,19 +102,38 @@ async function main() {
   await prisma.visit.deleteMany();
   await prisma.locker.deleteMany();
 
-  // Build the list: 60 men's and 60 women's, numbered M01–M60 and F01–F60.
-  // The padding is what keeps them sorting correctly — without it "M10" would
-  // come before "M2" in every dropdown in the app.
+  // HOW MANY LOCKERS THIS BUILDING HAS, per gender. Sites differ — Mississauga
+  // has 30 of each, and the next site will have its own number — so this is read
+  // from the site's own .env rather than baked in here. Every site runs the same
+  // image, so a hardcoded number would silently give a new building the wrong
+  // count on the day it opens.
+  //
+  //     LOCKERS_PER_GENDER=30     in the .env next to docker-compose.prod.yml
+  //
+  // Unset means 30, which is Mississauga's real number — chosen so a forgotten
+  // setting produces too FEW lockers rather than too many. Offering a guest a
+  // locker that doesn't physically exist is the worse failure: they walk to it,
+  // find nothing, and come back to the desk.
+  const perGender = Number(process.env.LOCKERS_PER_GENDER) || 30;
+  if (!Number.isInteger(perGender) || perGender < 1 || perGender > 500) {
+    console.error(
+      `LOCKERS_PER_GENDER must be a whole number between 1 and 500 — got "${process.env.LOCKERS_PER_GENDER}".`
+    );
+    process.exit(1);
+  }
+
+  // Numbered M01–M30 and F01–F30. The padding is what keeps them sorting
+  // correctly — without it "M10" would come before "M2" in every dropdown.
   const lockers = [];
-  for (let i = 1; i <= 60; i++) {
+  for (let i = 1; i <= perGender; i++) {
     const padded = String(i).padStart(2, "0");
     lockers.push({ number: `M${padded}`, gender: Gender.MALE });
     lockers.push({ number: `F${padded}`, gender: Gender.FEMALE });
   }
 
-  // Create all 120 in one go rather than 120 separate commands.
+  // Create them in one go rather than one command each.
   await prisma.locker.createMany({ data: lockers });
-  console.log(`Seeded ${lockers.length} lockers`);
+  console.log(`Seeded ${lockers.length} lockers (${perGender} per gender)`);
 }
 
 main()
